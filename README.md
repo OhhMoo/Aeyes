@@ -14,6 +14,12 @@ Most camera-based assistive apps continuously narrate what's *in front of* the u
 This one stays quiet until the *environment* triggers it — the user doesn't have to
 aim a camera, the sound itself prompts the investigation.
 
+> **Backend status — stub mode.** `server.py` currently returns canned strings
+> from a `STUB_RESPONSES` map. The SeeingEye Translator → Reasoner pipeline,
+> OpenAI key handling, and vLLM Reasoner described below are the *target*
+> architecture and are marked with `# TODO` in `server.py`. The browser side
+> (camera, YAMNet, ClipBuffer, TTS) is fully functional against the stub.
+
 ## Architecture
 
 ```
@@ -48,14 +54,15 @@ edit to `ClipBuffer.sample()` — no orchestration changes needed.
 
 ### Prerequisites
 
-- The repo's `requirements.txt` already includes `fastapi` and `uvicorn`. Install with:
+- Install the runtime deps:
   ```bash
   pip install -r requirements.txt
   ```
-- An `OPENAI_API_KEY` for the hosted Translator (gpt-4o, used in `/investigate` and `/analyze-change`).
-- *Optional but the "real SeeingEye stack" path:* a vLLM server running `Qwen/Qwen3-8B`
-  on `http://localhost:8001/v1` to back the Reasoner agent. See "vLLM" below. If you
-  don't have a GPU, see "Fully-hosted fallback" below to skip vLLM.
+- **Stub mode (current default):** nothing else required. No API keys, no GPU.
+- **For the target SeeingEye pipeline (not currently wired):** an `OPENAI_API_KEY`
+  for the hosted Translator (gpt-4o), and *optionally* a vLLM server running
+  `Qwen/Qwen3-8B` on `http://localhost:8001/v1` to back the Reasoner. See "vLLM"
+  below; if you don't have a GPU, see "Fully-hosted fallback" to skip vLLM.
 
 ### vLLM (self-hosted Reasoner — needs ~16GB VRAM)
 
@@ -89,9 +96,11 @@ No code change needed in `demo/server.py` — at startup it auto-patches the
 ### Start the server
 
 ```bash
-export OPENAI_API_KEY=sk-...
-cd demo
-uvicorn server:app --host 0.0.0.0 --port 8000
+# Stub mode — no API key required.
+uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+
+# Once SeeingEye is wired back in, also:
+# export OPENAI_API_KEY=sk-...
 ```
 
 Open <http://localhost:8000> in **Chrome** (mic + camera permissions; YAMNet via
@@ -99,7 +108,9 @@ TF.js works best on Chromium). Grant permissions when prompted. The page boots
 into camera-ready state with manual trigger buttons enabled. Click **"Enable
 sound detection"** to also load YAMNet and start listening on the mic.
 
-`GET /health` reports whether the API key is set and which models are configured.
+`GET /health` returns `{"ok": true, "mode": "stub"}` today. (When SeeingEye is
+reconnected it will also report whether the API key is set and which models
+are configured.)
 
 ## Demo plan (stage-day)
 
@@ -124,23 +135,25 @@ sound detection"** to also load YAMNet and start listening on the mic.
 - `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length and
   sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps. Raise the fps for
   finer change detection at the cost of more memory and per-tick JPEG encodes.
-- `EVENT_PROMPTS` (backend, `server.py`): the per-event investigative prompt. The
-  hackathon "secret sauce" — hand-crafting these per class gives much better answers
-  than a generic template.
-- Reasoner `max_steps` (in `src/multi-agent/config/config.toml` under `[flow]`): drop
-  from 3 → 1 to cut latency at the cost of reasoning depth.
+- `STUB_RESPONSES` (backend, `server.py`, **stub mode**): canned reply per event.
+  Will be replaced by `EVENT_PROMPTS` (per-event investigative prompts) when
+  SeeingEye is reconnected — that prompt map is the hackathon "secret sauce".
+- Reasoner `max_steps` (in `src/multi-agent/config/config.toml` under `[flow]`,
+  **target architecture**): drop from 3 → 1 to cut latency at the cost of
+  reasoning depth.
 
 ## File map
 
 | Path | Purpose |
 |---|---|
-| `demo/server.py` | FastAPI app — `/investigate`, `/analyze-change`, `/health`. Patches `OPENAI_API_KEY` into the SeeingEye config singleton at startup. |
-| `demo/static/index.html` | Minimal page: status, manual triggers, camera preview. |
-| `demo/static/app.js` | Camera init, YAMNet inference loop, TTS, trigger orchestration, fetch wiring. |
-| `demo/static/clip_buffer.js` | `ClipBuffer` class — rolling 10 s frame window with named sampling strategies (`latest` / `edges` / `uniform`). The seam between "video coming in" and "images going to the model". |
-| `demo/static/event_prompts.js` | UI label map for the "Heard: …" chip. |
-| `demo/static/style.css` | Dark theme. |
-| `src/multi-agent/config/config.toml` | `[llm.translator_api]` repointed at OpenAI; `[llm.reasoning_api]` left on local vLLM (`:8001`). |
+| `server.py` | FastAPI app — `/investigate`, `/analyze-change`, `/health`. Currently stub mode; `# TODO` markers point to where SeeingEye will plug back in. |
+| `requirements.txt` | Stub-mode deps (FastAPI + uvicorn). The full SeeingEye pipeline will need additional packages and an external `src/multi-agent/` checkout. |
+| `static/index.html` | Minimal page: status, manual triggers, camera preview. |
+| `static/app.js` | Camera init, YAMNet inference loop, TTS, trigger orchestration, fetch wiring. |
+| `static/clip_buffer.js` | `ClipBuffer` class — rolling 10 s frame window with named sampling strategies (`latest` / `edges` / `uniform`). The seam between "video coming in" and "images going to the model". |
+| `static/event_prompts.js` | UI label map for the "Heard: …" chip. |
+| `static/style.css` | Dark theme. |
+| `src/multi-agent/config/config.toml` *(target architecture, not yet active)* | `[llm.translator_api]` repointed at OpenAI; `[llm.reasoning_api]` left on local vLLM (`:8001`). |
 
 ## Limits / honest caveats
 
@@ -150,5 +163,6 @@ sound detection"** to also load YAMNet and start listening on the mic.
   gate keeps it usable; tighten both for noisier rooms.
 - Audio is the *trigger and context*, not a model input. SeeingEye is image-only.
   The detected event becomes a string baked into the prompt.
-- `/analyze-change` bypasses the agent loop and calls the hosted VLM directly with
-  both frames — the agent loop is overkill (and too slow) for a frame diff.
+- `/analyze-change` is designed to bypass the agent loop and call the hosted VLM
+  directly with both frames — the agent loop is overkill (and too slow) for a
+  frame diff. (Currently stubbed.)
