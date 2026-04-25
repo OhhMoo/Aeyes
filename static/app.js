@@ -29,6 +29,13 @@ const CLIP_FPS = 1;
 // "an object moved or appeared". Tune lower for chatty, higher for terse.
 const CHANGE_THRESHOLD = 8;
 
+// "Recent captures" sub-window — keeps thumbnails of every frame the model
+// actually saw, then auto-evicts once they cross CAPTURE_TTL_MS. The rolling
+// ClipBuffer is still pruned aggressively after each request; this panel is
+// a separate, time-bounded record for review/demo.
+const CAPTURE_TTL_MS = 5 * 60 * 1000;       // 5 minutes
+const CAPTURE_PRUNE_INTERVAL_MS = 30_000;   // re-sweep + re-render every 30 s
+
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status-text");
 const responseEl = $("response-text");
@@ -42,6 +49,10 @@ const lastFrameImg = $("last-frame");
 const voiceBtn = $("voice-btn");
 const voiceTranscriptEl = $("voice-transcript");
 const voiceResponseEl = $("voice-response");
+const capturedListEl = $("captured-list");
+const capturedCountEl = $("captured-count");
+
+const capturedFrames = []; // {ts, dataUrl, eventLabel} — newest first
 
 let busy = false;
 let clipBuffer = null;
@@ -83,6 +94,82 @@ function showLatency(seconds) {
   latencyChipEl.textContent = `Responded in ${seconds.toFixed(2)}s`;
   latencyChipEl.hidden = false;
 }
+
+// ---------------- Recent captures sub-window ----------------
+function eventLabelFor(eventKey) {
+  if (eventKey === "_describe") return "Describe";
+  if (eventKey === "_change") return "Changed";
+  if (eventKey === "_auto") return "Auto";
+  return eventKey;
+}
+
+function recordCapture(eventKey, dataUrl) {
+  if (!dataUrl) return;
+  capturedFrames.unshift({
+    ts: Date.now(),
+    dataUrl,
+    eventLabel: eventLabelFor(eventKey),
+  });
+  pruneCapturedFrames();
+  renderCapturedFrames();
+}
+
+function pruneCapturedFrames() {
+  const cutoff = Date.now() - CAPTURE_TTL_MS;
+  // Newest-first array → old entries cluster at the tail.
+  while (capturedFrames.length && capturedFrames[capturedFrames.length - 1].ts < cutoff) {
+    capturedFrames.pop();
+  }
+}
+
+function renderCapturedFrames() {
+  if (!capturedListEl) return;
+  if (capturedCountEl) {
+    capturedCountEl.textContent = capturedFrames.length
+      ? `(${capturedFrames.length})`
+      : "";
+  }
+  if (capturedFrames.length === 0) {
+    capturedListEl.innerHTML = '<p class="muted captured-empty">No captures yet.</p>';
+    return;
+  }
+  capturedListEl.textContent = "";
+  for (const f of capturedFrames) {
+    const tile = document.createElement("div");
+    tile.className = "captured-tile";
+
+    const img = document.createElement("img");
+    img.src = f.dataUrl;
+    img.alt = `${f.eventLabel} capture at ${new Date(f.ts).toLocaleTimeString()}`;
+    img.title = img.alt;
+    tile.appendChild(img);
+
+    const meta = document.createElement("div");
+    meta.className = "captured-meta";
+    const label = document.createElement("span");
+    label.className = "captured-label";
+    label.textContent = f.eventLabel;
+    const time = document.createElement("span");
+    time.textContent = new Date(f.ts).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    meta.appendChild(label);
+    meta.appendChild(time);
+    tile.appendChild(meta);
+
+    capturedListEl.appendChild(tile);
+  }
+}
+
+// Periodic sweep so old entries vanish even when no new captures arrive.
+setInterval(() => {
+  if (capturedFrames.length === 0) return;
+  const before = capturedFrames.length;
+  pruneCapturedFrames();
+  if (capturedFrames.length !== before) renderCapturedFrames();
+}, CAPTURE_PRUNE_INTERVAL_MS);
 
 // ---------------- Camera + frame buffer ----------------
 async function initCamera() {
@@ -188,6 +275,7 @@ async function runInvestigation(eventKey) {
       setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
+      recordCapture(eventKey, triggerFrame.dataUrl);
       speak(data.response);
       window.refreshHistory?.();
     }
@@ -235,6 +323,7 @@ async function runChangeAnalysis() {
       setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
+      recordCapture("_change", newest.dataUrl);
       speak(data.response);
       window.refreshHistory?.();
     }
@@ -286,7 +375,7 @@ function autoCaptureTick() {
   }
 }
 
-function startAutoCapture() {
+function startAutoCapture({ silent = false } = {}) {
   if (autoCaptureTimer !== null) return;
   firstAutoTick = true;
   lastNarrationHash = null;
@@ -294,7 +383,7 @@ function startAutoCapture() {
   setStatus("Auto-capturing.", "listening");
   autoBtn.textContent = "Stop auto-capture";
   autoBtn.dataset.state = "running";
-  speak("Auto capture started.");
+  if (!silent) speak("Auto capture started.");
   // Fire one immediately so the user gets feedback in <5 s.
   autoCaptureTick();
 }
@@ -410,12 +499,40 @@ changeBtn.addEventListener("click", () => runChangeAnalysis());
 (async () => {
   try {
     await initCamera();
-    setStatus("Ready. Start auto-capture or use a manual button.");
     describeBtn.disabled = false;
     changeBtn.disabled = false;
     autoBtn.disabled = false;
   } catch (e) {
     console.error(e);
     setStatus("Camera permission denied. Reload and grant camera access.", "error");
+    return;
   }
+
+  // Auto-capture is the default running state. We only auto-start for
+  // already-authenticated users so the loop doesn't fire requests while the
+  // auth overlay is still gating the app on first visit.
+  if (localStorage.getItem("aeyes_token")) {
+    startAutoCapture({ silent: true });
+  } else {
+    setStatus("Sign in to begin.");
+  }
+
+  // Pick up fresh logins without modifying auth.js: when the auth overlay
+  // closes (auth.js flips appView.hidden from true → false), kick the loop
+  // on if it isn't already running.
+  const appView = document.getElementById("app-view");
+  if (appView) {
+    new MutationObserver(() => {
+      if (
+        !appView.hidden &&
+        autoCaptureTimer === null &&
+        localStorage.getItem("aeyes_token")
+      ) {
+        startAutoCapture({ silent: true });
+      }
+    }).observe(appView, { attributes: true, attributeFilter: ["hidden"] });
+  }
+
+  // Initial render of the (likely empty) captures panel so the layout settles.
+  renderCapturedFrames();
 })();

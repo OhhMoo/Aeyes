@@ -77,12 +77,18 @@ edit to `ClipBuffer.sample()` — no orchestration changes needed.
 
 ### Cache hygiene
 
-No frames are persisted to disk. The `ClipBuffer` is a fixed-size in-memory
-window (max 11 frames at 1 fps). After each `/investigate` or `/analyze-change`
-call returns, the buffer is collapsed to the single most recent frame and the
-trigger-moment data URL is released. The captured-still preview that flashes
-in the camera area is auto-hidden after 8 s. Worst-case in-memory footprint is
-one to two ~50 KB JPEG strings at any moment.
+No frames are persisted to disk. Two distinct in-memory caches:
+
+1. **Working buffer** (`ClipBuffer`). Fixed-size rolling window (max 11
+   frames at 1 fps). Pruned to the single most recent frame after every
+   `/investigate` and `/analyze-change`. Trigger-moment data URLs are
+   released as soon as the request finishes. Worst-case footprint: ~100 KB.
+2. **Recent captures sub-window**. A separate, time-bounded record of every
+   frame the model actually saw, with timestamp + source label. Entries
+   auto-evict after `CAPTURE_TTL_MS` (default 5 min) — both proactively as
+   new captures arrive and via a periodic sweep every 30 s, so old entries
+   vanish even if nothing else is happening. Worst-case at peak (auto-capture
+   firing on every change for 5 min): ~60 frames × 50 KB ≈ 3 MB.
 
 History is persisted server-side in `aeyes.db` only for authenticated users
 (via `auth.optional_user`). Unauthenticated requests still work; they just
@@ -121,9 +127,13 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
 Open <http://localhost:8000> in **Chrome** (camera + microphone permissions;
 `SpeechRecognition` is Chromium-only). On first visit you'll be asked to
-register. Then click **"Start auto-capture"** to begin the 5-second narration
-loop, **"Describe surroundings"** / **"What changed?"** for one-shot requests,
-or **"Hold to speak"** to ask the model a question by voice.
+register; on subsequent visits with a stored token, auto-capture starts
+automatically. The auto-capture loop is the default running state — use
+**"Stop auto-capture"** to silence it. The manual buttons override on top:
+**"Describe surroundings"** for a fresh on-demand description, **"What
+changed?"** for an explicit diff, **"Hold to speak"** to ask the model a
+question by voice. The **"Recent captures"** panel on the right shows
+thumbnails of every frame the model actually saw, auto-evicting after 5 min.
 
 `GET /health` returns `{"ok": true, "mode": "stub", "elevenlabs": <bool>}`.
 
@@ -194,6 +204,10 @@ temperature = 0.2
   request is sent. Default 8. Lower for chattier narration, higher for
   terser. Static scenes typically diff at 1–3; an object moving usually
   diffs 10+.
+- `CAPTURE_TTL_MS` (frontend, `app.js`): how long thumbnails live in the
+  "Recent captures" sub-window before being auto-evicted. Default 5 min.
+- `CAPTURE_PRUNE_INTERVAL_MS` (frontend, `app.js`): how often the eviction
+  sweep runs even when no new captures arrive. Default 30 s.
 - `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length
   and sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps.
 - `STUB_RESPONSES` (backend, `server.py`, **stub mode**): canned reply per
