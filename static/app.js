@@ -4,15 +4,20 @@
 //   (a) Auto-capture timer       -> /investigate (event=_describe), every AUTO_CAPTURE_MS
 //   (b) Manual "describe"        -> /investigate (event=_describe)
 //   (c) Manual "what changed"    -> /analyze-change (oldest+newest frame from rolling buffer)
+//   (d) Hold-to-speak voice chat -> /chat (transcript + ElevenLabs audio reply)
 //
 // All capture paths funnel through `runInvestigation(event)` so status / TTS
-// behave consistently. There is no audio detection: blind users already hear
-// what's happening — the model's job is to describe what they cannot.
+// behave consistently. There is no audio classification: blind users already
+// hear what's happening — the model's job is to describe what they cannot.
 //
-// No frames are persisted. The ClipBuffer is a fixed-size rolling window in
-// memory; on each auto-capture the buffer is collapsed to the latest frame
-// (kept solely so /analyze-change has something to diff against), and the
-// trigger-moment data URL is dropped as soon as the request finishes.
+// History is server-driven when the user is logged in (auth.js owns the
+// rendering via window.refreshHistory). When unauthenticated, requests still
+// work; they just aren't persisted.
+//
+// No frames are persisted on disk. The ClipBuffer is a fixed-size rolling
+// window in memory; on each request the buffer is collapsed to the latest
+// frame (kept solely so /analyze-change has something to diff against), and
+// the trigger-moment data URL is dropped as soon as the request finishes.
 
 const AUTO_CAPTURE_MS = 5_000;
 const CLIP_WINDOW_MS = 10_000;
@@ -28,15 +33,13 @@ const changeBtn = $("change-btn");
 const cameraEl = $("camera");
 const captureCanvas = $("capture-canvas");
 const lastFrameImg = $("last-frame");
-const historySectionEl = $("history-section");
-const historyListEl = $("history-list");
-
-const HISTORY_MAX = 3;
+const voiceBtn = $("voice-btn");
+const voiceTranscriptEl = $("voice-transcript");
+const voiceResponseEl = $("voice-response");
 
 let busy = false;
 let clipBuffer = null;
 let autoCaptureTimer = null;
-const history = [];
 
 // ---------------- TTS ----------------
 function speak(text, opts = {}) {
@@ -66,40 +69,6 @@ function showLatency(seconds) {
   }
   latencyChipEl.textContent = `Responded in ${seconds.toFixed(2)}s`;
   latencyChipEl.hidden = false;
-}
-
-function eventLabelFor(eventKey) {
-  if (eventKey === "_describe") return "Describe";
-  if (eventKey === "_change") return "What changed";
-  if (eventKey === "_auto") return "Auto-capture";
-  return eventKey;
-}
-
-function pushHistory(eventKey, text, elapsed) {
-  history.unshift({ ts: Date.now(), eventLabel: eventLabelFor(eventKey), text, elapsed });
-  while (history.length > HISTORY_MAX) history.pop();
-  renderHistory();
-}
-
-function renderHistory() {
-  if (history.length === 0) {
-    historySectionEl.hidden = true;
-    historyListEl.textContent = "";
-    return;
-  }
-  historySectionEl.hidden = false;
-  historyListEl.textContent = "";
-  for (const item of history) {
-    const li = document.createElement("li");
-    li.textContent = item.text;
-    const meta = document.createElement("span");
-    meta.className = "h-meta";
-    const t = new Date(item.ts).toLocaleTimeString();
-    const elapsed = typeof item.elapsed === "number" ? `${item.elapsed.toFixed(2)}s` : "—";
-    meta.textContent = `${item.eventLabel} · ${t} · ${elapsed}`;
-    li.appendChild(meta);
-    historyListEl.appendChild(li);
-  }
 }
 
 // ---------------- Camera + frame buffer ----------------
@@ -171,7 +140,7 @@ async function runInvestigation(eventKey) {
   try {
     const resp = await fetch("/investigate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
       body: JSON.stringify({ event: eventKey, image_b64: triggerFrame.dataUrl }),
     });
     const data = await resp.json();
@@ -185,15 +154,15 @@ async function runInvestigation(eventKey) {
       setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
-      pushHistory(eventKey, data.response, elapsed);
       speak(data.response);
+      window.refreshHistory?.();
     }
   } catch (e) {
     setStatus("Network error.", "error");
     speak("Network error.");
     console.error(e);
   } finally {
-    triggerFrame = null; // release reference to the trigger frame's data URL
+    triggerFrame = null; // release the trigger frame's data URL
     pruneClipCache();
     busy = false;
   }
@@ -218,7 +187,7 @@ async function runChangeAnalysis() {
   try {
     const resp = await fetch("/analyze-change", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
       body: JSON.stringify({ frame0_b64: oldest.dataUrl, frame1_b64: newest.dataUrl }),
     });
     const data = await resp.json();
@@ -232,8 +201,8 @@ async function runChangeAnalysis() {
       setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
-      pushHistory("_change", data.response, elapsed);
       speak(data.response);
+      window.refreshHistory?.();
     }
   } catch (e) {
     setStatus("Network error.", "error");
@@ -271,6 +240,92 @@ function stopAutoCapture() {
   delete autoBtn.dataset.state;
   speak("Auto capture stopped.");
 }
+
+// ---------------- Voice chat ----------------
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let voiceBusy = false;
+
+function initRecognition() {
+  if (!SpeechRecognition) return null;
+  const r = new SpeechRecognition();
+  r.continuous = false;
+  r.interimResults = false;
+  r.lang = "en-US";
+  return r;
+}
+
+async function playAudioB64(b64) {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "audio/mpeg" });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  await audio.play();
+  audio.onended = () => URL.revokeObjectURL(url);
+}
+
+async function runChat(text) {
+  voiceBusy = true;
+  voiceTranscriptEl.textContent = `You: ${text}`;
+  voiceTranscriptEl.hidden = false;
+  voiceResponseEl.textContent = "…";
+  voiceResponseEl.hidden = false;
+
+  try {
+    const resp = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
+      body: JSON.stringify({ text }),
+    });
+    const data = await resp.json();
+    voiceResponseEl.textContent = data.response;
+    if (data.audio_b64) {
+      await playAudioB64(data.audio_b64);
+    } else {
+      speak(data.response, { cancel: false });
+    }
+    window.refreshHistory?.();
+  } catch (e) {
+    voiceResponseEl.textContent = "Network error.";
+    console.error(e);
+  } finally {
+    voiceBusy = false;
+  }
+}
+
+voiceBtn.addEventListener("mousedown", () => {
+  if (voiceBusy) return;
+  if (!SpeechRecognition) {
+    voiceTranscriptEl.textContent = "Speech recognition not supported in this browser. Use Chrome.";
+    voiceTranscriptEl.hidden = false;
+    return;
+  }
+
+  recognition = initRecognition();
+  voiceBtn.classList.add("recording");
+  voiceBtn.textContent = "Listening…";
+
+  recognition.onresult = (ev) => {
+    const text = ev.results[0][0].transcript.trim();
+    if (text) runChat(text);
+  };
+
+  recognition.onerror = (ev) => {
+    console.error("SpeechRecognition error", ev.error);
+    voiceTranscriptEl.textContent = `Mic error: ${ev.error}`;
+    voiceTranscriptEl.hidden = false;
+  };
+
+  recognition.onend = () => {
+    voiceBtn.classList.remove("recording");
+    voiceBtn.textContent = "Hold to speak";
+  };
+
+  recognition.start();
+});
+
+voiceBtn.addEventListener("mouseup", () => recognition?.stop());
+voiceBtn.addEventListener("mouseleave", () => recognition?.stop());
 
 // ---------------- Wiring ----------------
 autoBtn.addEventListener("click", () => {
