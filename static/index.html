@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aeyes — environmental investigation</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Aeyes</h1>
+      <p class="tagline">The environment prompts the investigation.</p>
+    </header>
+
+    <section id="status-card" aria-live="polite" aria-atomic="true">
+      <p class="status-label">Status</p>
+      <p id="status-text" class="status-text">Initializing…</p>
+      <p id="event-chip" class="event-chip" hidden></p>
+      <p id="response-text" class="response-text" hidden></p>
+    </section>
+
+    <section id="controls">
+      <button id="enable-mic" class="primary">Enable sound detection</button>
+      <button id="describe-btn" disabled>Describe my surroundings</button>
+      <button id="change-btn" disabled>What just changed?</button>
+    </section>
+
+    <details>
+      <summary>Manual triggers (for demo)</summary>
+      <p class="muted">Simulate an audio event without using the mic.</p>
+      <div class="manual-grid">
+        <button class="manual" data-event="Glass">Breaking glass</button>
+        <button class="manual" data-event="Rain">Heavy rain</button>
+        <button class="manual" data-event="Water tap, faucet">Running water</button>
+        <button class="manual" data-event="Smoke detector, smoke alarm">Smoke alarm</button>
+        <button class="manual" data-event="Smash, crash">Crash / fall</button>
+      </div>
+    </details>
+
+    <section id="camera-section">
+      <p class="muted">Camera preview</p>
+      <video id="camera" autoplay muted playsinline></video>
+      <canvas id="capture-canvas" hidden></canvas>
+      <img id="last-frame" alt="last captured frame" hidden />
+    </section>
+
+    <footer>
+      <p class="muted">Audio classified on-device with YAMNet · Vision via SeeingEye Translator → Reasoner</p>
+    </footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="/static/event_prompts.js"></script>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
