@@ -1,49 +1,41 @@
 // Aeyes demo — frontend orchestration.
 //
 // Pipelines:
-//   (a) Audio event (YAMNet) -> /investigate
-//   (b) Manual button        -> /investigate
-//   (c) Manual "describe"    -> /investigate (event=_describe)
-//   (d) Manual "what changed"-> /analyze-change (oldest+newest frame from rolling buffer)
+//   (a) Auto-capture timer       -> /investigate (event=_describe), every AUTO_CAPTURE_MS
+//   (b) Manual "describe"        -> /investigate (event=_describe)
+//   (c) Manual "what changed"    -> /analyze-change (oldest+newest frame from rolling buffer)
 //
-// All triggers funnel through `runInvestigation(event)` so cooldown / status / TTS
-// behave consistently.
+// All capture paths funnel through `runInvestigation(event)` so status / TTS
+// behave consistently. There is no audio detection: blind users already hear
+// what's happening — the model's job is to describe what they cannot.
+//
+// No frames are persisted. The ClipBuffer is a fixed-size rolling window in
+// memory; on each auto-capture the buffer is collapsed to the latest frame
+// (kept solely so /analyze-change has something to diff against), and the
+// trigger-moment data URL is dropped as soon as the request finishes.
 
-const COOLDOWN_MS = 15_000;
-const CONFIDENCE_THRESHOLD = 0.6;
-const YAMNET_HUB_URL = "https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1";
-const YAMNET_LABELS_URL =
-  "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv";
+const AUTO_CAPTURE_MS = 5_000;
 const CLIP_WINDOW_MS = 10_000;
 const CLIP_FPS = 1;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status-text");
-const eventChipEl = $("event-chip");
 const responseEl = $("response-text");
 const latencyChipEl = $("latency-chip");
-const enableMicBtn = $("enable-mic");
+const autoBtn = $("auto-btn");
 const describeBtn = $("describe-btn");
 const changeBtn = $("change-btn");
 const cameraEl = $("camera");
 const captureCanvas = $("capture-canvas");
 const lastFrameImg = $("last-frame");
-const meterRowEl = $("meter-row");
-const audioMeterFillEl = $("audio-meter-fill");
-const topClassEl = $("top-class");
 const historySectionEl = $("history-section");
 const historyListEl = $("history-list");
 
 const HISTORY_MAX = 3;
 
-let lastTriggerAt = 0;
 let busy = false;
-let yamnetModel = null;
-let yamnetLabels = null;
-let yamnetLoading = null; // in-flight load promise (dedup boot prewarm vs button click)
-let audioCtx = null;
-let micEnabled = false;
-let clipBuffer = null; // ClipBuffer instance, created after camera init
+let clipBuffer = null;
+let autoCaptureTimer = null;
 const history = [];
 
 // ---------------- TTS ----------------
@@ -62,16 +54,6 @@ function setStatus(text, state) {
   else delete statusEl.dataset.state;
 }
 
-function showEvent(eventKey) {
-  if (!eventKey || eventKey.startsWith("_")) {
-    eventChipEl.hidden = true;
-    return;
-  }
-  const label = window.EVENT_LABELS[eventKey] || eventKey;
-  eventChipEl.textContent = `Heard: ${label}`;
-  eventChipEl.hidden = false;
-}
-
 function showResponse(text) {
   responseEl.textContent = text;
   responseEl.hidden = !text;
@@ -86,13 +68,15 @@ function showLatency(seconds) {
   latencyChipEl.hidden = false;
 }
 
+function eventLabelFor(eventKey) {
+  if (eventKey === "_describe") return "Describe";
+  if (eventKey === "_change") return "What changed";
+  if (eventKey === "_auto") return "Auto-capture";
+  return eventKey;
+}
+
 function pushHistory(eventKey, text, elapsed) {
-  const eventLabel = eventKey === "_describe"
-    ? "Describe"
-    : eventKey === "_change"
-    ? "What changed"
-    : (window.EVENT_LABELS && window.EVENT_LABELS[eventKey]) || eventKey;
-  history.unshift({ ts: Date.now(), eventLabel, text, elapsed });
+  history.unshift({ ts: Date.now(), eventLabel: eventLabelFor(eventKey), text, elapsed });
   while (history.length > HISTORY_MAX) history.pop();
   renderHistory();
 }
@@ -146,150 +130,36 @@ function captureFrameDataUrl() {
 function showLastFrame(dataUrl) {
   lastFrameImg.src = dataUrl;
   lastFrameImg.hidden = false;
-  cameraEl.style.display = "none"; // swap preview for the captured still
+  cameraEl.style.display = "none";
   setTimeout(() => {
     cameraEl.style.display = "";
     lastFrameImg.hidden = true;
   }, 8000);
 }
 
-// ---------------- YAMNet ----------------
-async function loadYamnet({ silent = false } = {}) {
-  if (yamnetModel) return;
-  if (yamnetLoading) {
-    // Already in flight (e.g. boot prewarm). Surface status if a non-silent
-    // caller is now waiting on it.
-    if (!silent) setStatus("Loading audio model…");
-    return yamnetLoading;
-  }
-  if (!silent) setStatus("Loading audio model…");
-  yamnetLoading = (async () => {
-    try {
-      await tf.setBackend("webgl");
-      await tf.ready();
-    } catch (e) {
-      console.warn("WebGL TF.js backend unavailable, falling back to default", e);
-    }
-
-    const labelsResp = await fetch(YAMNET_LABELS_URL);
-    if (!labelsResp.ok) throw new Error(`labels fetch ${labelsResp.status}`);
-    const csv = await labelsResp.text();
-    yamnetLabels = csv
-      .split("\n")
-      .slice(1)
-      .map((line) => line.split(",").slice(2).join(",").replace(/^"|"$/g, ""))
-      .filter((s) => s);
-
-    yamnetModel = await tf.loadGraphModel(YAMNET_HUB_URL, { fromTFHub: true });
-  })();
-
-  try {
-    await yamnetLoading;
-  } finally {
-    yamnetLoading = null;
-  }
-}
-
-function predictTopClass(samples) {
-  // samples: Float32Array, 16kHz mono. Returns {label, score} or null.
-  return tf.tidy(() => {
-    const input = tf.tensor1d(samples);
-    const out = yamnetModel.execute(input);
-    const scoresTensor = Array.isArray(out)
-      ? out.find((t) => t.shape.length === 2 && t.shape[1] === 521)
-      : out;
-    if (!scoresTensor) return null;
-    const scores = scoresTensor.mean(0); // average over frames
-    const arr = scores.dataSync();
-    let bestIdx = 0;
-    let bestVal = -Infinity;
-    for (let i = 0; i < arr.length; i++) {
-      if (arr[i] > bestVal) {
-        bestVal = arr[i];
-        bestIdx = i;
-      }
-    }
-    return { label: yamnetLabels[bestIdx], score: bestVal };
-  });
-}
-
-// ---------------- Audio capture ----------------
-async function initAudio() {
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-  if (audioCtx.sampleRate !== 16000) {
-    console.warn(`AudioContext sampleRate is ${audioCtx.sampleRate}, expected 16000. YAMNet predictions may be unreliable.`);
-  }
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: false, noiseSuppression: false },
-    video: false,
-  });
-  const source = audioCtx.createMediaStreamSource(stream);
-  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-  source.connect(processor);
-  processor.connect(audioCtx.destination);
-
-  const ringBuffer = new Float32Array(16000); // 1 second
-  let writeIdx = 0;
-  let lastInferAt = 0;
-
-  processor.onaudioprocess = (ev) => {
-    const data = ev.inputBuffer.getChannelData(0);
-
-    // Live audio meter — RMS of this block, lightly amplified so quiet rooms
-    // still register movement. Updates every audio block (~256 ms).
-    let sumSq = 0;
-    for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
-    const rms = Math.sqrt(sumSq / data.length);
-    const pct = Math.min(100, Math.round(rms * 600));
-    audioMeterFillEl.style.width = `${pct}%`;
-
-    for (let i = 0; i < data.length; i++) {
-      ringBuffer[writeIdx] = data[i];
-      writeIdx = (writeIdx + 1) % ringBuffer.length;
-    }
-    const now = performance.now();
-    if (now - lastInferAt < 500) return;
-    if (busy) return;
-    if (!yamnetModel) return;
-    lastInferAt = now;
-    const samples = new Float32Array(ringBuffer.length);
-    for (let i = 0; i < ringBuffer.length; i++) {
-      samples[i] = ringBuffer[(writeIdx + i) % ringBuffer.length];
-    }
-    const top = predictTopClass(samples);
-    if (!top) return;
-
-    // Always show what YAMNet currently thinks — gives the demo visible
-    // "thinking" between triggers.
-    topClassEl.textContent = `Hearing: ${top.label} · ${(top.score * 100).toFixed(0)}%`;
-
-    if (
-      window.YAMNET_TRIGGER_CLASSES.has(top.label) &&
-      top.score >= CONFIDENCE_THRESHOLD &&
-      Date.now() - lastTriggerAt >= COOLDOWN_MS
-    ) {
-      runInvestigation(top.label);
-    }
-  };
+// Drop everything except the most recent frame, so the rolling window doesn't
+// hold sent frames longer than necessary. /analyze-change still has the latest
+// to diff against on its next call.
+function pruneClipCache() {
+  if (!clipBuffer) return;
+  const last = clipBuffer.latest();
+  clipBuffer.frames.length = 0;
+  if (last) clipBuffer.frames.push(last);
 }
 
 // ---------------- Trigger handlers ----------------
 async function runInvestigation(eventKey) {
   if (busy) return;
-  if (Date.now() - lastTriggerAt < COOLDOWN_MS && !eventKey.startsWith("_")) return;
   if (cameraEl.readyState < 2) {
     setStatus("Camera not ready", "error");
     return;
   }
   busy = true;
-  lastTriggerAt = Date.now();
-  showEvent(eventKey);
   showResponse("");
   showLatency(null);
 
   setStatus("Investigating…", "investigating");
-  speak("Investigating.");
-  const triggerFrame = clipBuffer.captureNow();
+  let triggerFrame = clipBuffer.captureNow();
   if (!triggerFrame) {
     setStatus("Camera not ready", "error");
     busy = false;
@@ -312,7 +182,7 @@ async function runInvestigation(eventKey) {
       showResponse(data.response || "");
       speak("Something went wrong with the investigation.");
     } else {
-      setStatus(micEnabled ? "Listening." : "Ready.", micEnabled ? "listening" : null);
+      setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
       pushHistory(eventKey, data.response, elapsed);
@@ -323,6 +193,8 @@ async function runInvestigation(eventKey) {
     speak("Network error.");
     console.error(e);
   } finally {
+    triggerFrame = null; // release reference to the trigger frame's data URL
+    pruneClipCache();
     busy = false;
   }
 }
@@ -336,11 +208,10 @@ async function runChangeAnalysis() {
   busy = true;
   setStatus("Comparing the last few seconds…", "investigating");
   speak("Comparing the scene.");
-  showEvent("_change");
   showResponse("");
   showLatency(null);
 
-  const [oldest, newest] = clipBuffer.sample("edges");
+  let [oldest, newest] = clipBuffer.sample("edges");
   showLastFrame(newest.dataUrl);
 
   const tStart = performance.now();
@@ -358,7 +229,7 @@ async function runChangeAnalysis() {
       showResponse(data.response || "");
       speak("Could not compare the scene.");
     } else {
-      setStatus(micEnabled ? "Listening." : "Ready.", micEnabled ? "listening" : null);
+      setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
       pushHistory("_change", data.response, elapsed);
@@ -369,58 +240,57 @@ async function runChangeAnalysis() {
     speak("Network error.");
     console.error(e);
   } finally {
+    oldest = null;
+    newest = null;
+    pruneClipCache();
     busy = false;
   }
 }
 
+// ---------------- Auto-capture loop ----------------
+function startAutoCapture() {
+  if (autoCaptureTimer !== null) return;
+  autoCaptureTimer = setInterval(() => {
+    if (busy) return; // skip ticks that overlap an in-flight request
+    runInvestigation("_describe");
+  }, AUTO_CAPTURE_MS);
+  setStatus("Auto-capturing.", "listening");
+  autoBtn.textContent = "Stop auto-capture";
+  autoBtn.dataset.state = "running";
+  speak("Auto capture started.");
+  // Fire one immediately so the user gets feedback in <5 s.
+  runInvestigation("_describe");
+}
+
+function stopAutoCapture() {
+  if (autoCaptureTimer === null) return;
+  clearInterval(autoCaptureTimer);
+  autoCaptureTimer = null;
+  setStatus("Ready.");
+  autoBtn.textContent = "Start auto-capture";
+  delete autoBtn.dataset.state;
+  speak("Auto capture stopped.");
+}
+
 // ---------------- Wiring ----------------
-enableMicBtn.addEventListener("click", async () => {
-  enableMicBtn.disabled = true;
-  try {
-    await loadYamnet();
-    await initAudio();
-    micEnabled = true;
-    meterRowEl.hidden = false;
-    topClassEl.textContent = "Listening…";
-    enableMicBtn.textContent = "Sound detection active";
-    setStatus("Listening.", "listening");
-    speak("Sound detection is active.");
-  } catch (e) {
-    console.error(e);
-    setStatus("Could not start sound detection. Use manual triggers below.", "error");
-    enableMicBtn.disabled = false;
-    enableMicBtn.textContent = "Retry sound detection";
-  }
+autoBtn.addEventListener("click", () => {
+  if (autoCaptureTimer === null) startAutoCapture();
+  else stopAutoCapture();
 });
 
 describeBtn.addEventListener("click", () => runInvestigation("_describe"));
 changeBtn.addEventListener("click", () => runChangeAnalysis());
 
-document.querySelectorAll("button.manual").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const ev = btn.dataset.event;
-    if (ev) {
-      lastTriggerAt = 0; // manual buttons bypass cooldown
-      runInvestigation(ev);
-    }
-  });
-});
-
 // ---------------- Boot ----------------
 (async () => {
   try {
     await initCamera();
-    setStatus("Ready. Enable sound detection or use a manual trigger.");
+    setStatus("Ready. Start auto-capture or use a manual button.");
     describeBtn.disabled = false;
     changeBtn.disabled = false;
+    autoBtn.disabled = false;
   } catch (e) {
     console.error(e);
     setStatus("Camera permission denied. Reload and grant camera access.", "error");
-  }
-  // Prewarm YAMNet in the background so the "Enable sound detection" click
-  // doesn't have to wait on a cold model fetch + WebGL init. Permissions
-  // still gated behind that click; this just stages the model.
-  if (window.tf) {
-    loadYamnet({ silent: true }).catch((e) => console.warn("YAMNet prewarm:", e));
   }
 })();

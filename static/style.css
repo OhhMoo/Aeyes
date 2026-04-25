@@ -64,17 +64,6 @@ header h1 {
 .status-text[data-state="investigating"] { color: var(--accent-2); }
 .status-text[data-state="error"] { color: var(--warn); }
 
-.event-chip {
-  display: inline-block;
-  margin: 14px 0 0;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(242, 201, 124, 0.12);
-  color: var(--accent-2);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
 .response-text {
   margin: 14px 0 0;
   padding: 14px 16px;
@@ -82,32 +71,6 @@ header h1 {
   border-radius: 10px;
   font-size: 17px;
   line-height: 1.5;
-}
-
-#meter-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
-}
-#audio-meter {
-  flex: 0 0 96px;
-  height: 6px;
-  background: #1a1c22;
-  border-radius: 3px;
-  overflow: hidden;
-}
-#audio-meter-fill {
-  display: block;
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  transition: width 80ms linear;
-}
-#top-class {
-  margin: 0;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
 }
 
 .latency-chip {
@@ -181,26 +144,11 @@ button.primary {
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) { background: #92f5cd; }
-
-details {
-  background: var(--panel);
-  border-radius: var(--radius);
-  padding: 12px 18px;
-  border: 1px solid #23262d;
+button.primary[data-state="running"] {
+  background: var(--accent-2);
+  color: #1a1300;
 }
-details summary {
-  cursor: pointer;
-  font-size: 14px;
-  color: var(--muted);
-}
-details[open] summary { color: var(--text); margin-bottom: 8px; }
-.manual-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
-  margin-top: 10px;
-}
-.manual { font-size: 13px; padding: 10px 12px; }
+button.primary[data-state="running"]:hover:not(:disabled) { background: #f5d99a; }
 
 #camera-section {
   background: var(--panel);
