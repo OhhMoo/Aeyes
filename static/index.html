@@ -7,51 +7,140 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <main>
-    <header>
-      <h1>Aeyes</h1>
-      <p class="tagline">The environment prompts the investigation.</p>
-    </header>
 
-    <section id="status-card" aria-live="polite" aria-atomic="true">
-      <p class="status-label">Status</p>
-      <p id="status-text" class="status-text">Initializing…</p>
-      <p id="event-chip" class="event-chip" hidden></p>
-      <p id="response-text" class="response-text" hidden></p>
-    </section>
-
-    <section id="controls">
-      <button id="enable-mic" class="primary">Enable sound detection</button>
-      <button id="describe-btn" disabled>Describe my surroundings</button>
-      <button id="change-btn" disabled>What just changed?</button>
-    </section>
-
-    <details>
-      <summary>Manual triggers (for demo)</summary>
-      <p class="muted">Simulate an audio event without using the mic.</p>
-      <div class="manual-grid">
-        <button class="manual" data-event="Glass">Breaking glass</button>
-        <button class="manual" data-event="Rain">Heavy rain</button>
-        <button class="manual" data-event="Water tap, faucet">Running water</button>
-        <button class="manual" data-event="Smoke detector, smoke alarm">Smoke alarm</button>
-        <button class="manual" data-event="Smash, crash">Crash / fall</button>
+  <!-- Auth overlay -->
+  <div id="auth-overlay">
+    <div id="auth-card">
+      <h2>Aeyes</h2>
+      <p class="auth-tagline">Sign in to track your history.</p>
+      <div id="auth-tabs">
+        <button class="auth-tab active" data-tab="login">Login</button>
+        <button class="auth-tab" data-tab="register">Register</button>
       </div>
-    </details>
+      <form id="auth-form" autocomplete="on">
+        <input id="auth-username" type="text"     placeholder="Username" autocomplete="username"          required />
+        <input id="auth-password" type="password" placeholder="Password" autocomplete="current-password" required />
+        <button id="auth-submit" type="submit" class="primary">Login</button>
+      </form>
+      <p id="auth-error" class="auth-error" hidden></p>
+    </div>
+  </div>
 
-    <section id="camera-section">
-      <p class="muted">Camera preview</p>
-      <video id="camera" autoplay muted playsinline></video>
-      <canvas id="capture-canvas" hidden></canvas>
-      <img id="last-frame" alt="last captured frame" hidden />
-    </section>
+  <!-- Fixed corner user menu -->
+  <div id="user-menu-wrap" hidden>
+    <button id="user-menu-btn" class="corner-btn" aria-label="User menu">
+      <span id="corner-avatar">?</span>
+    </button>
+    <!-- no hidden attr — visibility controlled by .open class -->
+    <div id="user-dropdown">
+      <p id="corner-user-name" class="dropdown-name"></p>
+      <button id="profile-btn">Profile</button>
+      <button id="logout-btn">Logout</button>
+    </div>
+  </div>
 
-    <footer>
-      <p class="muted">Audio classified on-device with YAMNet · Vision via SeeingEye Translator → Reasoner</p>
-    </footer>
+  <main>
+    <div id="app-view">
+
+      <!-- Left: always-visible camera -->
+      <div id="left-col">
+        <header>
+          <h1>Aeyes</h1>
+          <p class="tagline">The environment prompts the investigation.</p>
+        </header>
+        <div id="camera-section">
+          <video id="camera" autoplay muted playsinline></video>
+          <canvas id="capture-canvas" hidden></canvas>
+          <img id="last-frame" alt="last captured frame" hidden />
+        </div>
+        <footer>
+          <p class="muted">Audio classified on-device with YAMNet · Vision via SeeingEye</p>
+        </footer>
+      </div>
+
+      <!-- Right: swappable panels -->
+      <div id="right-col">
+
+        <!-- App panel -->
+        <div id="right-app">
+          <section id="status-card" aria-live="polite" aria-atomic="true">
+            <p class="status-label">Status</p>
+            <p id="status-text" class="status-text">Initializing…</p>
+            <p id="event-chip" class="event-chip" hidden></p>
+            <p id="response-text" class="response-text" hidden></p>
+          </section>
+
+          <section id="controls">
+            <button id="enable-mic" class="primary">Enable sound detection</button>
+            <button id="describe-btn" disabled>Describe surroundings</button>
+            <button id="change-btn" disabled>What changed?</button>
+          </section>
+
+          <section id="voice-chat-card">
+            <p class="status-label">Voice chat</p>
+            <button id="voice-btn" class="primary">Hold to speak</button>
+            <p id="voice-transcript" class="transcript-text" hidden></p>
+            <p id="voice-response" class="response-text" hidden></p>
+          </section>
+
+          <details>
+            <summary>Manual triggers</summary>
+            <p class="muted">Simulate an audio event without the mic.</p>
+            <div class="manual-grid">
+              <button class="manual" data-event="Glass">Breaking glass</button>
+              <button class="manual" data-event="Rain">Heavy rain</button>
+              <button class="manual" data-event="Water tap, faucet">Running water</button>
+              <button class="manual" data-event="Smoke detector, smoke alarm">Smoke alarm</button>
+              <button class="manual" data-event="Smash, crash">Crash / fall</button>
+            </div>
+          </details>
+
+          <details id="history-panel">
+            <summary>History</summary>
+            <div id="history-list"><p class="muted history-empty">No history yet.</p></div>
+          </details>
+        </div>
+
+        <!-- Profile panel (hidden by default via CSS) -->
+        <div id="right-profile">
+          <button id="back-btn" class="back-btn">← Back</button>
+
+          <div class="profile-hero">
+            <div class="avatar" id="profile-avatar">?</div>
+            <div class="profile-info">
+              <h2 id="profile-display-name-text">—</h2>
+              <p class="muted" id="profile-username-text"></p>
+              <p class="muted" id="profile-stats-text"></p>
+            </div>
+          </div>
+
+          <div class="profile-card">
+            <h3 class="section-heading">Display name</h3>
+            <form id="display-name-form" class="inline-form">
+              <input id="edit-display-name" type="text" placeholder="Display name" autocomplete="off" />
+              <button type="submit" class="primary">Save</button>
+            </form>
+            <p id="display-name-msg" class="form-msg" hidden></p>
+          </div>
+
+          <div class="profile-card">
+            <h3 class="section-heading">Change password</h3>
+            <form id="password-form" class="stack-form">
+              <input id="current-password" type="password" placeholder="Current password"      autocomplete="current-password" />
+              <input id="new-password"     type="password" placeholder="New password (≥4 chars)" autocomplete="new-password" />
+              <button type="submit" class="primary">Update password</button>
+            </form>
+            <p id="password-msg" class="form-msg" hidden></p>
+          </div>
+        </div>
+
+      </div><!-- #right-col -->
+    </div><!-- #app-view -->
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
   <script src="/static/event_prompts.js"></script>
+  <script src="/static/auth.js"></script>
   <script src="/static/app.js" type="module"></script>
 </body>
 </html>

@@ -27,6 +27,9 @@ const changeBtn = $("change-btn");
 const cameraEl = $("camera");
 const captureCanvas = $("capture-canvas");
 const lastFrameImg = $("last-frame");
+const voiceBtn = $("voice-btn");
+const voiceTranscriptEl = $("voice-transcript");
+const voiceResponseEl = $("voice-response");
 
 let lastTriggerAt = 0;
 let busy = false;
@@ -208,7 +211,7 @@ async function runInvestigation(eventKey) {
   try {
     const resp = await fetch("/investigate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
       body: JSON.stringify({ event: eventKey, image_b64: dataUrl }),
     });
     const data = await resp.json();
@@ -220,6 +223,7 @@ async function runInvestigation(eventKey) {
       setStatus(micEnabled ? "Listening." : "Ready.", micEnabled ? "listening" : null);
       showResponse(data.response);
       speak(data.response);
+      window.refreshHistory?.();
     }
   } catch (e) {
     setStatus("Network error.", "error");
@@ -249,7 +253,7 @@ async function runChangeAnalysis() {
   try {
     const resp = await fetch("/analyze-change", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
       body: JSON.stringify({ frame0_b64: oldest.dataUrl, frame1_b64: newest.dataUrl }),
     });
     const data = await resp.json();
@@ -261,6 +265,7 @@ async function runChangeAnalysis() {
       setStatus(micEnabled ? "Listening." : "Ready.", micEnabled ? "listening" : null);
       showResponse(data.response);
       speak(data.response);
+      window.refreshHistory?.();
     }
   } catch (e) {
     setStatus("Network error.", "error");
@@ -300,6 +305,97 @@ document.querySelectorAll("button.manual").forEach((btn) => {
       runInvestigation(ev);
     }
   });
+});
+
+// ---------------- Voice chat ----------------
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let voiceBusy = false;
+
+function initRecognition() {
+  if (!SpeechRecognition) return null;
+  const r = new SpeechRecognition();
+  r.continuous = false;
+  r.interimResults = false;
+  r.lang = "en-US";
+  return r;
+}
+
+async function playAudioB64(b64) {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "audio/mpeg" });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  await audio.play();
+  audio.onended = () => URL.revokeObjectURL(url);
+}
+
+async function runChat(text) {
+  voiceBusy = true;
+  voiceTranscriptEl.textContent = `You: ${text}`;
+  voiceTranscriptEl.hidden = false;
+  voiceResponseEl.textContent = "…";
+  voiceResponseEl.hidden = false;
+
+  try {
+    const resp = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
+      body: JSON.stringify({ text }),
+    });
+    const data = await resp.json();
+    voiceResponseEl.textContent = data.response;
+    if (data.audio_b64) {
+      await playAudioB64(data.audio_b64);
+    } else {
+      speak(data.response, { cancel: false });
+    }
+    window.refreshHistory?.();
+  } catch (e) {
+    voiceResponseEl.textContent = "Network error.";
+    console.error(e);
+  } finally {
+    voiceBusy = false;
+  }
+}
+
+voiceBtn.addEventListener("mousedown", () => {
+  if (voiceBusy) return;
+  if (!SpeechRecognition) {
+    voiceTranscriptEl.textContent = "Speech recognition not supported in this browser. Use Chrome.";
+    voiceTranscriptEl.hidden = false;
+    return;
+  }
+
+  recognition = initRecognition();
+  voiceBtn.classList.add("recording");
+  voiceBtn.textContent = "Listening…";
+
+  recognition.onresult = (ev) => {
+    const text = ev.results[0][0].transcript.trim();
+    if (text) runChat(text);
+  };
+
+  recognition.onerror = (ev) => {
+    console.error("SpeechRecognition error", ev.error);
+    voiceTranscriptEl.textContent = `Mic error: ${ev.error}`;
+    voiceTranscriptEl.hidden = false;
+  };
+
+  recognition.onend = () => {
+    voiceBtn.classList.remove("recording");
+    voiceBtn.textContent = "Hold to speak";
+  };
+
+  recognition.start();
+});
+
+voiceBtn.addEventListener("mouseup", () => {
+  recognition?.stop();
+});
+
+voiceBtn.addEventListener("mouseleave", () => {
+  recognition?.stop();
 });
 
 // ---------------- Boot ----------------
