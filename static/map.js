@@ -194,6 +194,35 @@
     tabBusy = false;
   });
 
+  // Switch to the map tab and pulse a marker at (lat, lon). Used by app.js
+  // when /chat returns a `referenced_location` — the answer to "where did I
+  // see X" should *show* the place, not just say it.
+  async function flashLocation(lat, lon, name) {
+    if (typeof lat !== "number" || typeof lon !== "number") return;
+    // Switch tabs
+    tabMap.classList.add("active");
+    tabCamera.classList.remove("active");
+    cameraSection.hidden = true;
+    mapSection.hidden    = false;
+    await refreshMap();
+    if (!leafletMap) return;
+
+    const popup = name
+      ? `<strong style="color:#f1f3f5">${name}</strong>`
+      : '<strong style="color:#f1f3f5">Here</strong>';
+    const marker = L.marker([lat, lon], { icon: makeIcon("#f27c7c", 16) })
+      .addTo(leafletMap)
+      .bindPopup(popup)
+      .openPopup();
+    leafletMap.setView([lat, lon], 16);
+
+    // Pulse + auto-remove after 12 s so flashes don't accumulate.
+    const el = marker.getElement();
+    if (el) el.style.animation = "pulse 1.2s ease-in-out infinite";
+    setTimeout(() => marker.remove(), 12_000);
+  }
+
   // expose so auth.js can refresh map pins after a location is saved/deleted
-  window.refreshMap = refreshMap;
+  window.refreshMap   = refreshMap;
+  window.flashLocation = flashLocation;
 })();

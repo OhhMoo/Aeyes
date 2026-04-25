@@ -100,19 +100,39 @@
             <p id="voice-response" class="response-text" hidden></p>
           </section>
 
-          <details id="captured-panel" open>
-            <summary>Recent captures <span id="captured-count" class="muted captured-count"></span></summary>
-            <div id="captured-list"><p class="muted captured-empty">No captures yet.</p></div>
-          </details>
-
-          <details id="history-panel">
+          <details id="history-panel" open>
             <summary>History</summary>
+            <div id="place-suggest" class="place-suggest" hidden>
+              <p class="place-suggest-text">
+                You've been here a few times.
+                <span id="place-suggest-count"></span>
+                Name this place?
+              </p>
+              <form id="place-suggest-form" class="inline-form">
+                <input id="place-suggest-name" type="text" placeholder='e.g. "Home"' autocomplete="off" />
+                <button type="submit" class="primary">Save</button>
+                <button type="button" id="place-suggest-dismiss" class="back-btn">Not now</button>
+              </form>
+            </div>
             <div id="history-filter-bar">
               <select id="history-location-filter">
                 <option value="">All locations</option>
               </select>
             </div>
             <div id="history-list"><p class="muted history-empty">No history yet.</p></div>
+          </details>
+
+          <details id="calibration-panel">
+            <summary>Calibration</summary>
+            <div class="calib-row">
+              <label for="threshold-slider">Change threshold</label>
+              <input type="range" id="threshold-slider" min="0" max="30" step="0.5" />
+              <span id="threshold-value" class="calib-readout">8.0</span>
+            </div>
+            <p class="calib-meta">
+              Last diff: <span id="last-diff" class="calib-readout">—</span>
+              <span class="muted calib-hint">(silent below threshold)</span>
+            </p>
           </details>
         </div>
 

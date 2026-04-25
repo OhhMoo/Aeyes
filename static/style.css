@@ -305,55 +305,89 @@ details summary {
 }
 details[open] summary { color: var(--text); margin-bottom: 8px; }
 
-/* ── Recent captures sub-window ────────────────────────────────────────────── */
-.captured-count {
-  margin-left: 6px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-#captured-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-  gap: 8px;
-  margin-top: 8px;
-  max-height: 280px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #2c303a transparent;
-}
-.captured-tile {
+/* ── Inline capture thumbnails (in history entries) ────────────────────────── */
+.history-row {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  gap: 10px;
+  align-items: flex-start;
 }
-.captured-tile img {
-  width: 100%;
+.history-thumb {
+  flex: 0 0 64px;
+  width: 64px;
   aspect-ratio: 4 / 3;
   object-fit: cover;
   border-radius: 6px;
   background: #000;
   border: 1px solid #23262d;
 }
-.captured-meta {
+.history-text { flex: 1; min-width: 0; }
+
+/* ── Auto-cluster "Name this place?" banner ───────────────────────────────── */
+.place-suggest {
+  background: rgba(124, 242, 194, 0.08);
+  border: 1px solid rgba(124, 242, 194, 0.25);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 4px;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+  flex-direction: column;
+  gap: 10px;
+}
+.place-suggest[hidden] { display: none; }
+.place-suggest-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+#place-suggest-count {
+  display: block;
   color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
 }
-.captured-label {
+.place-suggest .inline-form { gap: 6px; }
+.place-suggest input { flex: 1; }
+#place-suggest-dismiss {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+/* ── Calibration panel ─────────────────────────────────────────────────────── */
+#calibration-panel .calib-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+#calibration-panel label {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+#calibration-panel input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.calib-readout {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
   font-weight: 600;
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 36px;
+  text-align: right;
 }
-.captured-empty { padding: 8px 0; }
+.calib-meta {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+.calib-hint { font-size: 11px; }
+#last-diff[data-state="above"] { color: var(--accent); }
+#last-diff[data-state="below"] { color: var(--muted); }
 
 /* ── History (in right-app panel) ──────────────────────────────────────────── */
 .history-entry {

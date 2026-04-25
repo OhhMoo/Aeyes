@@ -384,27 +384,48 @@ function timeAgo(isoStr) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+function _esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function _labelFor(h) {
+  if (h.type === "chat")        return "Voice chat";
+  if (h.type === "change")      return "Scene change";
+  if (h.type === "investigate") return "Saw";
+  return _esc(h.event || h.type || "Event");
+}
+
 function renderHistory(entries) {
   if (!entries.length) {
     historyListEl.innerHTML = '<p class="muted history-empty">No history yet.</p>';
     return;
   }
   historyListEl.innerHTML = [...entries].reverse().map((h) => {
-    const label =
-      h.type === "chat"   ? "Voice chat"   :
-      h.type === "change" ? "Scene change" :
-      `Heard: ${h.event || h.input_text}`;
+    const label   = _labelFor(h);
     const locChip = h.location_name
-      ? `<span class="location-chip">${h.location_name}</span>` : "";
+      ? `<span class="location-chip">${_esc(h.location_name)}</span>` : "";
     const inputLine = h.type === "chat" && h.input_text
-      ? `<p class="history-input">You: ${h.input_text}</p>` : "";
+      ? `<p class="history-input">You: ${_esc(h.input_text)}</p>` : "";
+    // If we still have the captured frame in memory (within the 1 min TTL),
+    // show it inline. Older entries gracefully fall back to text-only.
+    const thumb = window.getCaptureNear?.(h.created_at);
+    const thumbHtml = thumb
+      ? `<img class="history-thumb" src="${thumb}" alt="captured frame" loading="lazy" />`
+      : "";
     return `<div class="history-entry">
-      <div class="history-meta">
-        <span class="history-label">${label}${locChip}</span>
-        <span class="history-time">${timeAgo(h.created_at)}</span>
+      <div class="history-row">
+        ${thumbHtml}
+        <div class="history-text">
+          <div class="history-meta">
+            <span class="history-label">${label}${locChip}</span>
+            <span class="history-time">${timeAgo(h.created_at)}</span>
+          </div>
+          ${inputLine}
+          <p class="history-response">${_esc(h.response)}</p>
+        </div>
       </div>
-      ${inputLine}
-      <p class="history-response">${h.response}</p>
     </div>`;
   }).join("");
 }
@@ -416,10 +437,114 @@ async function refreshHistory() {
     const url = locationId ? `/history?location_id=${locationId}` : "/history";
     const resp = await fetch(url, { headers: window.getAuthHeaders() });
     if (!resp.ok) return;
-    renderHistory(await resp.json());
+    const entries = await resp.json();
+    renderHistory(entries);
+    maybeSuggestPlace(entries);
   } catch { /* non-critical */ }
 }
 window.refreshHistory = refreshHistory;
+
+// ── Auto-cluster suggestion ──────────────────────────────────────────────────
+//
+// When ≥ CLUSTER_MIN_HITS recent history rows have geo coordinates, are not
+// already tied to a saved location, and lie within CLUSTER_RADIUS_M of each
+// other, prompt the user to name the place. Skips clusters the user has
+// dismissed in this session.
+
+const CLUSTER_RADIUS_M  = 50;
+const CLUSTER_MIN_HITS  = 5;
+const dismissedClusters = new Set(); // round(lat, 4) + "," + round(lon, 4)
+
+const placeSuggestEl     = document.getElementById("place-suggest");
+const placeSuggestCount  = document.getElementById("place-suggest-count");
+const placeSuggestForm   = document.getElementById("place-suggest-form");
+const placeSuggestName   = document.getElementById("place-suggest-name");
+const placeSuggestSkip   = document.getElementById("place-suggest-dismiss");
+let pendingClusterCenter = null; // {lat, lon} of the cluster currently shown
+
+function _haversineM(lat1, lon1, lat2, lon2) {
+  const R = 6_371_000;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dphi = toRad(lat2 - lat1);
+  const dlam = toRad(lon2 - lon1);
+  const a = Math.sin(dphi / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dlam / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function _clusterKey(lat, lon) {
+  return `${lat.toFixed(4)},${lon.toFixed(4)}`;
+}
+
+function maybeSuggestPlace(entries) {
+  if (!entries || entries.length < CLUSTER_MIN_HITS) {
+    placeSuggestEl.hidden = true;
+    return;
+  }
+  // Eligible: has lat/lon, not already tied to a saved location.
+  const eligible = entries.filter((h) =>
+    typeof h.lat === "number" && typeof h.lon === "number" && !h.location_id
+  );
+  if (eligible.length < CLUSTER_MIN_HITS) {
+    placeSuggestEl.hidden = true;
+    return;
+  }
+  // Find the densest cluster: for each row, count neighbors within radius.
+  let best = null;
+  let bestCount = 0;
+  for (const r of eligible) {
+    let count = 0;
+    for (const s of eligible) {
+      if (_haversineM(r.lat, r.lon, s.lat, s.lon) <= CLUSTER_RADIUS_M) count++;
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      best = r;
+    }
+  }
+  if (!best || bestCount < CLUSTER_MIN_HITS) {
+    placeSuggestEl.hidden = true;
+    return;
+  }
+  const key = _clusterKey(best.lat, best.lon);
+  if (dismissedClusters.has(key)) {
+    placeSuggestEl.hidden = true;
+    return;
+  }
+  pendingClusterCenter = { lat: best.lat, lon: best.lon };
+  placeSuggestCount.textContent = `${bestCount} captures clustered within ~${CLUSTER_RADIUS_M} m.`;
+  placeSuggestEl.hidden = false;
+}
+
+placeSuggestForm?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = placeSuggestName.value.trim();
+  if (!name || !pendingClusterCenter) return;
+  try {
+    const resp = await fetch("/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders() },
+      body: JSON.stringify({ name, ...pendingClusterCenter }),
+    });
+    if (!resp.ok) return;
+    placeSuggestName.value = "";
+    placeSuggestEl.hidden = true;
+    pendingClusterCenter = null;
+    await loadLocations();
+    window.refreshMap?.();
+    // Re-fetch history so the just-saved cluster's rows now show location_name
+    // and stop triggering the suggestion banner.
+    refreshHistory();
+  } catch { /* non-critical */ }
+});
+
+placeSuggestSkip?.addEventListener("click", () => {
+  if (pendingClusterCenter) {
+    dismissedClusters.add(_clusterKey(pendingClusterCenter.lat, pendingClusterCenter.lon));
+  }
+  placeSuggestEl.hidden = true;
+  pendingClusterCenter = null;
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function showMsg(el, text, type) {

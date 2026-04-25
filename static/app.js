@@ -23,6 +23,15 @@ const AUTO_CAPTURE_MS = 5_000;
 const CLIP_WINDOW_MS = 10_000;
 const CLIP_FPS = 1;
 
+// Perceptual-hash threshold for the auto-capture change gate. Scale is the
+// mean absolute brightness difference per pixel between two 16×16 thumbnails
+// (0–255). ~3 corresponds to "no perceptible change", ~10+ corresponds to
+// "an object moved or appeared". `let` (not `const`) so the calibration
+// slider in the UI can adjust it live during stage rehearsal.
+const CHANGE_THRESHOLD_DEFAULT = 8;
+let changeThreshold = CHANGE_THRESHOLD_DEFAULT;
+
+
 // "Recent captures" sub-window — keeps thumbnails of every frame the model
 // actually saw, then auto-evicts once they cross CAPTURE_TTL_MS. The rolling
 // ClipBuffer is still pruned aggressively after each request; this panel is
@@ -44,10 +53,16 @@ const lastFrameImg = $("last-frame");
 const voiceBtn = $("voice-btn");
 const voiceTranscriptEl = $("voice-transcript");
 const voiceResponseEl = $("voice-response");
-const capturedListEl = $("captured-list");
-const capturedCountEl = $("captured-count");
+const thresholdSliderEl = $("threshold-slider");
+const thresholdValueEl = $("threshold-value");
+const lastDiffEl = $("last-diff");
 
+// In-memory cache of frames the model recently saw, keyed by capture time.
+// auth.js's renderHistory looks up matching frames by timestamp via
+// `window.getCaptureNear` and inlines the thumbnail. Frames auto-evict after
+// CAPTURE_TTL_MS, after which the corresponding history rows render text-only.
 const capturedFrames = []; // {ts, dataUrl, eventLabel} — newest first
+const CAPTURE_MATCH_SLACK_MS = 8_000; // server clock vs client clock + roundtrip
 
 const SAFE_MODE_PHRASES = [
   "tell me what to do", "guide me", "help me", "what should i do",
@@ -58,6 +73,13 @@ let busy = false;
 let clipBuffer = null;
 let autoCaptureTimer = null;
 let safeModeActive = false;
+let lastNarrationHash = null;
+let firstAutoTick = true;
+
+// Reusable 16×16 canvas for the perceptual hash — avoids allocating per tick.
+const HASH_CANVAS = document.createElement("canvas");
+HASH_CANVAS.width = 16;
+HASH_CANVAS.height = 16;
 
 // ---------------- TTS ----------------
 function speak(text, opts = {}) {
@@ -89,23 +111,11 @@ function showLatency(seconds) {
   latencyChipEl.hidden = false;
 }
 
-// ---------------- Recent captures sub-window ----------------
-function eventLabelFor(eventKey) {
-  if (eventKey === "_describe") return "Describe";
-  if (eventKey === "_change") return "Changed";
-  if (eventKey === "_auto") return "Auto";
-  return eventKey;
-}
-
-function recordCapture(eventKey, dataUrl) {
+// ---------------- Captured-frame cache ----------------
+function recordCapture(_eventKey, dataUrl) {
   if (!dataUrl) return;
-  capturedFrames.unshift({
-    ts: Date.now(),
-    dataUrl,
-    eventLabel: eventLabelFor(eventKey),
-  });
+  capturedFrames.unshift({ ts: Date.now(), dataUrl });
   pruneCapturedFrames();
-  renderCapturedFrames();
 }
 
 function pruneCapturedFrames() {
@@ -116,54 +126,72 @@ function pruneCapturedFrames() {
   }
 }
 
-function renderCapturedFrames() {
-  if (!capturedListEl) return;
-  if (capturedCountEl) {
-    capturedCountEl.textContent = capturedFrames.length
-      ? `(${capturedFrames.length})`
-      : "";
-  }
-  if (capturedFrames.length === 0) {
-    capturedListEl.innerHTML = '<p class="muted captured-empty">No captures yet.</p>';
-    return;
-  }
-  capturedListEl.textContent = "";
+// auth.js calls this from renderHistory to inline a thumbnail next to each
+// matching history entry. Server timestamps lag client-capture timestamps by
+// roundtrip + clock skew; CAPTURE_MATCH_SLACK_MS is the tolerance.
+window.getCaptureNear = function (isoTimestamp) {
+  if (!isoTimestamp) return null;
+  const target = new Date(isoTimestamp).getTime();
+  if (!Number.isFinite(target)) return null;
+  let best = null;
+  let bestDelta = CAPTURE_MATCH_SLACK_MS;
   for (const f of capturedFrames) {
-    const tile = document.createElement("div");
-    tile.className = "captured-tile";
-
-    const img = document.createElement("img");
-    img.src = f.dataUrl;
-    img.alt = `${f.eventLabel} capture at ${new Date(f.ts).toLocaleTimeString()}`;
-    img.title = img.alt;
-    tile.appendChild(img);
-
-    const meta = document.createElement("div");
-    meta.className = "captured-meta";
-    const label = document.createElement("span");
-    label.className = "captured-label";
-    label.textContent = f.eventLabel;
-    const time = document.createElement("span");
-    time.textContent = new Date(f.ts).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    meta.appendChild(label);
-    meta.appendChild(time);
-    tile.appendChild(meta);
-
-    capturedListEl.appendChild(tile);
+    const d = Math.abs(f.ts - target);
+    if (d <= bestDelta) {
+      best = f;
+      bestDelta = d;
+    }
   }
-}
+  return best ? best.dataUrl : null;
+};
 
-// Periodic sweep so old entries vanish even when no new captures arrive.
+// Periodic sweep so old frames vanish even when no new captures arrive. When
+// any frame is evicted, ask auth.js to re-render history so its thumbnail
+// disappears too — keeps the inline thumbnails honest about the TTL.
 setInterval(() => {
   if (capturedFrames.length === 0) return;
   const before = capturedFrames.length;
   pruneCapturedFrames();
-  if (capturedFrames.length !== before) renderCapturedFrames();
+  if (capturedFrames.length !== before) window.refreshHistory?.();
 }, CAPTURE_PRUNE_INTERVAL_MS);
+
+// Privacy: clear cached frames on logout so a different account on the same
+// browser tab doesn't see the previous user's thumbnails.
+document.getElementById("logout-btn")?.addEventListener("click", () => {
+  capturedFrames.length = 0;
+});
+
+// ---------------- Calibration ----------------
+function updateLastDiffReadout(diff) {
+  if (!lastDiffEl) return;
+  lastDiffEl.textContent = diff.toFixed(1);
+  lastDiffEl.dataset.state = diff >= changeThreshold ? "above" : "below";
+}
+
+function updateThresholdReadout() {
+  if (thresholdValueEl) thresholdValueEl.textContent = changeThreshold.toFixed(1);
+  // Re-color the last-diff readout against the new threshold without waiting
+  // for the next tick, so the slider feels responsive.
+  if (lastDiffEl && lastDiffEl.textContent && lastDiffEl.textContent !== "—") {
+    const last = parseFloat(lastDiffEl.textContent);
+    if (!Number.isNaN(last)) {
+      lastDiffEl.dataset.state = last >= changeThreshold ? "above" : "below";
+    }
+  }
+}
+
+function initCalibration() {
+  if (!thresholdSliderEl) return;
+  thresholdSliderEl.value = String(changeThreshold);
+  updateThresholdReadout();
+  thresholdSliderEl.addEventListener("input", () => {
+    const v = parseFloat(thresholdSliderEl.value);
+    if (!Number.isNaN(v)) {
+      changeThreshold = v;
+      updateThresholdReadout();
+    }
+  });
+}
 
 // ---------------- Camera + frame buffer ----------------
 async function initCamera() {
@@ -204,6 +232,27 @@ function pruneClipCache() {
   const last = clipBuffer.latest();
   clipBuffer.frames.length = 0;
   if (last) clipBuffer.frames.push(last);
+}
+
+// 16×16 grayscale thumbnail of the live camera frame. Returns a Uint8Array
+// of 256 brightness values, or null if the camera isn't ready.
+function frameHash() {
+  if (cameraEl.readyState < 2) return null;
+  const ctx = HASH_CANVAS.getContext("2d");
+  ctx.drawImage(cameraEl, 0, 0, 16, 16);
+  const data = ctx.getImageData(0, 0, 16, 16).data;
+  const out = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    out[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
+  }
+  return out;
+}
+
+// Mean absolute difference between two 256-byte hashes. Range 0–255.
+function hashDiff(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
 }
 
 // ---------------- Geolocation ----------------
@@ -330,6 +379,23 @@ async function runChangeAnalysis({ showFrame = true } = {}) {
 //
 function autoCaptureTick() {
   if (busy) return;
+  const h = frameHash();
+  if (!h) return;
+
+  if (firstAutoTick || lastNarrationHash === null) {
+    firstAutoTick = false;
+    lastNarrationHash = h;
+    runInvestigation("_describe");
+    return;
+  }
+
+  const diff = hashDiff(lastNarrationHash, h);
+  updateLastDiffReadout(diff);
+  if (diff < changeThreshold) {
+    return;
+  }
+
+  lastNarrationHash = h;
   if (clipBuffer && clipBuffer.length() >= 2) {
     runChangeAnalysis({ showFrame: false });
   } else {
@@ -339,6 +405,8 @@ function autoCaptureTick() {
 
 function startAutoCapture({ silent = false } = {}) {
   if (autoCaptureTimer !== null) return;
+  firstAutoTick = true;
+  lastNarrationHash = null;
   autoCaptureTimer = setInterval(autoCaptureTick, AUTO_CAPTURE_MS);
   setStatus("Auto-capturing.", "listening");
   autoBtn.textContent = "Stop auto-capture";
@@ -468,6 +536,13 @@ async function runChat(text) {
     } else {
       speak(data.response, { cancel: false });
     }
+    // Spatial-memory: when /chat answers a "where did I see X" or
+    // "what's at <location>" query, the response carries a referenced
+    // location — switch to the map tab and pulse a pin there.
+    if (data.referenced_location) {
+      const r = data.referenced_location;
+      window.flashLocation?.(r.lat, r.lon, r.name);
+    }
     window.refreshHistory?.();
   } catch (e) {
     voiceResponseEl.textContent = "Network error.";
@@ -568,6 +643,5 @@ changeBtn.addEventListener("click", () => runChangeAnalysis());
     }).observe(appView, { attributes: true, attributeFilter: ["hidden"] });
   }
 
-  // Initial render of the (likely empty) captures panel so the layout settles.
-  renderCapturedFrames();
+  initCalibration();
 })();
