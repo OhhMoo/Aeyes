@@ -51,13 +51,16 @@ const lastFrameImg = $("last-frame");
 const voiceBtn = $("voice-btn");
 const voiceTranscriptEl = $("voice-transcript");
 const voiceResponseEl = $("voice-response");
-const capturedListEl = $("captured-list");
-const capturedCountEl = $("captured-count");
 const thresholdSliderEl = $("threshold-slider");
 const thresholdValueEl = $("threshold-value");
 const lastDiffEl = $("last-diff");
 
+// In-memory cache of frames the model recently saw, keyed by capture time.
+// auth.js's renderHistory looks up matching frames by timestamp via
+// `window.getCaptureNear` and inlines the thumbnail. Frames auto-evict after
+// CAPTURE_TTL_MS, after which the corresponding history rows render text-only.
 const capturedFrames = []; // {ts, dataUrl, eventLabel} — newest first
+const CAPTURE_MATCH_SLACK_MS = 8_000; // server clock vs client clock + roundtrip
 
 let busy = false;
 let clipBuffer = null;
@@ -100,23 +103,11 @@ function showLatency(seconds) {
   latencyChipEl.hidden = false;
 }
 
-// ---------------- Recent captures sub-window ----------------
-function eventLabelFor(eventKey) {
-  if (eventKey === "_describe") return "Describe";
-  if (eventKey === "_change") return "Changed";
-  if (eventKey === "_auto") return "Auto";
-  return eventKey;
-}
-
-function recordCapture(eventKey, dataUrl) {
+// ---------------- Captured-frame cache ----------------
+function recordCapture(_eventKey, dataUrl) {
   if (!dataUrl) return;
-  capturedFrames.unshift({
-    ts: Date.now(),
-    dataUrl,
-    eventLabel: eventLabelFor(eventKey),
-  });
+  capturedFrames.unshift({ ts: Date.now(), dataUrl });
   pruneCapturedFrames();
-  renderCapturedFrames();
 }
 
 function pruneCapturedFrames() {
@@ -127,54 +118,40 @@ function pruneCapturedFrames() {
   }
 }
 
-function renderCapturedFrames() {
-  if (!capturedListEl) return;
-  if (capturedCountEl) {
-    capturedCountEl.textContent = capturedFrames.length
-      ? `(${capturedFrames.length})`
-      : "";
-  }
-  if (capturedFrames.length === 0) {
-    capturedListEl.innerHTML = '<p class="muted captured-empty">No captures yet.</p>';
-    return;
-  }
-  capturedListEl.textContent = "";
+// auth.js calls this from renderHistory to inline a thumbnail next to each
+// matching history entry. Server timestamps lag client-capture timestamps by
+// roundtrip + clock skew; CAPTURE_MATCH_SLACK_MS is the tolerance.
+window.getCaptureNear = function (isoTimestamp) {
+  if (!isoTimestamp) return null;
+  const target = new Date(isoTimestamp).getTime();
+  if (!Number.isFinite(target)) return null;
+  let best = null;
+  let bestDelta = CAPTURE_MATCH_SLACK_MS;
   for (const f of capturedFrames) {
-    const tile = document.createElement("div");
-    tile.className = "captured-tile";
-
-    const img = document.createElement("img");
-    img.src = f.dataUrl;
-    img.alt = `${f.eventLabel} capture at ${new Date(f.ts).toLocaleTimeString()}`;
-    img.title = img.alt;
-    tile.appendChild(img);
-
-    const meta = document.createElement("div");
-    meta.className = "captured-meta";
-    const label = document.createElement("span");
-    label.className = "captured-label";
-    label.textContent = f.eventLabel;
-    const time = document.createElement("span");
-    time.textContent = new Date(f.ts).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    meta.appendChild(label);
-    meta.appendChild(time);
-    tile.appendChild(meta);
-
-    capturedListEl.appendChild(tile);
+    const d = Math.abs(f.ts - target);
+    if (d <= bestDelta) {
+      best = f;
+      bestDelta = d;
+    }
   }
-}
+  return best ? best.dataUrl : null;
+};
 
-// Periodic sweep so old entries vanish even when no new captures arrive.
+// Periodic sweep so old frames vanish even when no new captures arrive. When
+// any frame is evicted, ask auth.js to re-render history so its thumbnail
+// disappears too — keeps the inline thumbnails honest about the TTL.
 setInterval(() => {
   if (capturedFrames.length === 0) return;
   const before = capturedFrames.length;
   pruneCapturedFrames();
-  if (capturedFrames.length !== before) renderCapturedFrames();
+  if (capturedFrames.length !== before) window.refreshHistory?.();
 }, CAPTURE_PRUNE_INTERVAL_MS);
+
+// Privacy: clear cached frames on logout so a different account on the same
+// browser tab doesn't see the previous user's thumbnails.
+document.getElementById("logout-btn")?.addEventListener("click", () => {
+  capturedFrames.length = 0;
+});
 
 // ---------------- Calibration ----------------
 function updateLastDiffReadout(diff) {
@@ -588,7 +565,5 @@ changeBtn.addEventListener("click", () => runChangeAnalysis());
     }).observe(appView, { attributes: true, attributeFilter: ["hidden"] });
   }
 
-  // Initial render of the (likely empty) captures panel so the layout settles.
-  renderCapturedFrames();
   initCalibration();
 })();

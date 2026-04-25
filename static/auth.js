@@ -363,27 +363,48 @@ function timeAgo(isoStr) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+function _esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function _labelFor(h) {
+  if (h.type === "chat")        return "Voice chat";
+  if (h.type === "change")      return "Scene change";
+  if (h.type === "investigate") return "Saw";
+  return _esc(h.event || h.type || "Event");
+}
+
 function renderHistory(entries) {
   if (!entries.length) {
     historyListEl.innerHTML = '<p class="muted history-empty">No history yet.</p>';
     return;
   }
   historyListEl.innerHTML = [...entries].reverse().map((h) => {
-    const label =
-      h.type === "chat"   ? "Voice chat"   :
-      h.type === "change" ? "Scene change" :
-      `Heard: ${h.event || h.input_text}`;
+    const label   = _labelFor(h);
     const locChip = h.location_name
-      ? `<span class="location-chip">${h.location_name}</span>` : "";
+      ? `<span class="location-chip">${_esc(h.location_name)}</span>` : "";
     const inputLine = h.type === "chat" && h.input_text
-      ? `<p class="history-input">You: ${h.input_text}</p>` : "";
+      ? `<p class="history-input">You: ${_esc(h.input_text)}</p>` : "";
+    // If we still have the captured frame in memory (within the 1 min TTL),
+    // show it inline. Older entries gracefully fall back to text-only.
+    const thumb = window.getCaptureNear?.(h.created_at);
+    const thumbHtml = thumb
+      ? `<img class="history-thumb" src="${thumb}" alt="captured frame" loading="lazy" />`
+      : "";
     return `<div class="history-entry">
-      <div class="history-meta">
-        <span class="history-label">${label}${locChip}</span>
-        <span class="history-time">${timeAgo(h.created_at)}</span>
+      <div class="history-row">
+        ${thumbHtml}
+        <div class="history-text">
+          <div class="history-meta">
+            <span class="history-label">${label}${locChip}</span>
+            <span class="history-time">${timeAgo(h.created_at)}</span>
+          </div>
+          ${inputLine}
+          <p class="history-response">${_esc(h.response)}</p>
+        </div>
       </div>
-      ${inputLine}
-      <p class="history-response">${h.response}</p>
     </div>`;
   }).join("");
 }
