@@ -14,8 +14,8 @@ const CONFIDENCE_THRESHOLD = 0.6;
 const YAMNET_HUB_URL = "https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1";
 const YAMNET_LABELS_URL =
   "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv";
-const FRAME_BUFFER_LEN = 11; // ~1 frame/sec, we want oldest = 10s ago
-const FRAME_INTERVAL_MS = 1_000;
+const CLIP_WINDOW_MS = 10_000;
+const CLIP_FPS = 1;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status-text");
@@ -37,7 +37,7 @@ let yamnetModel = null;
 let yamnetLabels = null;
 let audioCtx = null;
 let micEnabled = false;
-const frameBuffer = []; // {ts, dataUrl}
+let clipBuffer = null; // ClipBuffer instance, created after camera init
 
 // ---------------- TTS ----------------
 function speak(text, opts = {}) {
@@ -80,20 +80,19 @@ async function initCamera() {
   await new Promise((r) => (cameraEl.onloadedmetadata = r));
   captureCanvas.width = cameraEl.videoWidth;
   captureCanvas.height = cameraEl.videoHeight;
-  setInterval(snapshotIntoBuffer, FRAME_INTERVAL_MS);
+
+  clipBuffer = new window.ClipBuffer({
+    windowMs: CLIP_WINDOW_MS,
+    fps: CLIP_FPS,
+    captureFn: () => (cameraEl.readyState < 2 ? null : captureFrameDataUrl()),
+  });
+  clipBuffer.start();
 }
 
 function captureFrameDataUrl() {
   const ctx = captureCanvas.getContext("2d");
   ctx.drawImage(cameraEl, 0, 0, captureCanvas.width, captureCanvas.height);
   return captureCanvas.toDataURL("image/jpeg", 0.85);
-}
-
-function snapshotIntoBuffer() {
-  if (cameraEl.readyState < 2) return;
-  const dataUrl = captureFrameDataUrl();
-  frameBuffer.push({ ts: Date.now(), dataUrl });
-  while (frameBuffer.length > FRAME_BUFFER_LEN) frameBuffer.shift();
 }
 
 function showLastFrame(dataUrl) {
@@ -205,14 +204,19 @@ async function runInvestigation(eventKey) {
 
   setStatus("Investigating…", "investigating");
   speak("Investigating.");
-  const dataUrl = captureFrameDataUrl();
-  showLastFrame(dataUrl);
+  const triggerFrame = clipBuffer.captureNow();
+  if (!triggerFrame) {
+    setStatus("Camera not ready", "error");
+    busy = false;
+    return;
+  }
+  showLastFrame(triggerFrame.dataUrl);
 
   try {
     const resp = await fetch("/investigate", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
-      body: JSON.stringify({ event: eventKey, image_b64: dataUrl }),
+      body: JSON.stringify({ event: eventKey, image_b64: triggerFrame.dataUrl }),
     });
     const data = await resp.json();
     if (!data.success) {
@@ -236,7 +240,7 @@ async function runInvestigation(eventKey) {
 
 async function runChangeAnalysis() {
   if (busy) return;
-  if (frameBuffer.length < 2) {
+  if (!clipBuffer || clipBuffer.length() < 2) {
     speak("Not enough video history yet. Wait a few more seconds.");
     return;
   }
@@ -246,8 +250,7 @@ async function runChangeAnalysis() {
   showEvent("_change");
   showResponse("");
 
-  const oldest = frameBuffer[0];
-  const newest = frameBuffer[frameBuffer.length - 1];
+  const [oldest, newest] = clipBuffer.sample("edges");
   showLastFrame(newest.dataUrl);
 
   try {
