@@ -4,14 +4,16 @@ Aeyes demo backend — stub mode (SeeingEye not yet wired in).
 Endpoints:
   POST /auth/register       — create account
   POST /auth/login          — get JWT token
+  GET  /profile             — fetch current user profile + history count
+  PATCH /profile            — update display name and/or password
   GET  /history             — fetch user's event history (requires auth)
   GET  /locations           — list saved named locations (requires auth)
   POST /locations           — save a new named location (requires auth)
   DELETE /locations/{id}    — remove a saved location (requires auth)
   PATCH /locations/{id}     — rename a saved location (requires auth)
-  POST /investigate         — audio-event investigation (optional auth → history saved)
-  POST /analyze-change      — scene change detection  (optional auth → history saved)
-  POST /chat                — voice chat + ElevenLabs TTS (optional auth → history saved)
+  POST /investigate         — single-frame scene description (optional auth → history saved)
+  POST /analyze-change      — two-frame scene-diff narration   (optional auth → history saved)
+  POST /chat                — voice chat + ElevenLabs TTS       (optional auth → history saved)
   GET  /health              — readiness probe
 
 Env vars:
@@ -129,9 +131,12 @@ async def _resolve_location(
 
 def _build_context(history: list[dict]) -> str:
     """
-    Format recent history into a prompt context string.
-    When the real model is integrated, inject this string before the user's query
-    so the model has memory of past observations including where they happened.
+    Format recent history into a prompt context string. When the real model
+    is integrated, inject this before the user's query so the model has
+    memory of past observations *and where they happened* (location_name is
+    appended when present). The model's output is always a visual description
+    (audio-event triggering was removed), so "Saw" is the correct verb
+    regardless of the original event field.
     """
     if not history:
         return ""
@@ -141,11 +146,11 @@ def _build_context(history: list[dict]) -> str:
         snippet = h["response"][:100].rstrip(".")
         loc_str = f" at {h['location_name']}" if h.get("location_name") else ""
         if h["type"] == "chat":
-            lines.append(f'  [{ts}]{loc_str} User said: "{h["input_text"]}" → "{snippet}…"')
+            lines.append(f'  [{ts}]{loc_str} User asked: "{h["input_text"]}" → "{snippet}…"')
         elif h["type"] == "investigate":
-            lines.append(f'  [{ts}]{loc_str} Heard {h["event"]} → "{snippet}…"')
+            lines.append(f'  [{ts}]{loc_str} Saw: "{snippet}…"')
         elif h["type"] == "change":
-            lines.append(f'  [{ts}]{loc_str} Scene changed → "{snippet}…"')
+            lines.append(f'  [{ts}]{loc_str} Scene changed: "{snippet}…"')
     return "\n".join(lines)
 
 
@@ -308,16 +313,11 @@ async def remove_location(
 
 # ── Investigation endpoints ───────────────────────────────────────────────────
 
+# Canned replies keyed by event. Post-pivot the client only sends `_describe`
+# to /investigate; /analyze-change has its own response. When SeeingEye is
+# wired back in, this map is replaced by `EVENT_PROMPTS` — the per-event
+# investigative prompts that go *into* the model rather than canned reply text.
 STUB_RESPONSES: dict[str, str] = {
-    "Glass": "I heard breaking glass. The stub model is not yet connected — no visual analysis available.",
-    "Shatter": "I heard breaking glass. The stub model is not yet connected — no visual analysis available.",
-    "Rain": "I heard rain or water. The stub model is not yet connected — no visual analysis available.",
-    "Water tap, faucet": "I heard running water. The stub model is not yet connected — no visual analysis available.",
-    "Water": "I heard water sounds. The stub model is not yet connected — no visual analysis available.",
-    "Smoke detector, smoke alarm": "I heard a smoke alarm. The stub model is not yet connected — no visual analysis available.",
-    "Fire alarm": "I heard a fire alarm. The stub model is not yet connected — no visual analysis available.",
-    "Smash, crash": "I heard a crash. The stub model is not yet connected — no visual analysis available.",
-    "Thump, thud": "I heard a thud. The stub model is not yet connected — no visual analysis available.",
     "_describe": "Stub mode: SeeingEye model not yet connected. Cannot describe surroundings.",
     "_change": "Stub mode: SeeingEye model not yet connected. Cannot detect changes.",
 }
