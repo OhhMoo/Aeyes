@@ -70,6 +70,39 @@ main { height: 100%; overflow: hidden; }
   display: none;
 }
 
+/* ── Left column tabs ──────────────────────────────────────────────────────── */
+#left-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+.left-tab {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+.left-tab.active {
+  background: var(--accent);
+  color: #04140d;
+  border-color: transparent;
+}
+
+/* ── Map section ───────────────────────────────────────────────────────────── */
+#map-section {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+#map-section[hidden] { display: none; }
+
+#map {
+  width: 100%;
+  height: 100%;
+}
+
 /* ── Header / footer ───────────────────────────────────────────────────────── */
 header h1 {
   margin: 0;
@@ -498,3 +531,64 @@ details[open] summary { color: var(--text); margin-bottom: 8px; }
 .form-msg         { margin: 0; font-size: 13px; }
 .form-msg.success { color: var(--accent); }
 .form-msg.error   { color: var(--warn); }
+
+/* ── History filter ────────────────────────────────────────────────────────── */
+#history-filter-bar { padding: 8px 0 4px; }
+#history-location-filter {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid #2c303a;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+#history-location-filter:focus { box-shadow: var(--ring); }
+
+/* ── Saved locations list ──────────────────────────────────────────────────── */
+.locations-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.location-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border-radius: 10px;
+  border: 1px solid #23262d;
+}
+.location-name    { font-size: 14px; font-weight: 600; flex: 1; }
+.location-address { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.location-text    { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.location-delete  {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 4px 6px;
+  font-size: 13px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.location-delete:hover { color: var(--warn); background: transparent; }
+
+/* ── Location chip in history entries ─────────────────────────────────────── */
+.location-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(124, 242, 194, 0.1);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}

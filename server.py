@@ -2,22 +2,28 @@
 Aeyes demo backend — stub mode (SeeingEye not yet wired in).
 
 Endpoints:
-  POST /auth/register     — create account
-  POST /auth/login        — get JWT token
-  GET  /history           — fetch user's event history (requires auth)
-  POST /investigate       — audio-event investigation (optional auth → history saved)
-  POST /analyze-change    — scene change detection  (optional auth → history saved)
-  POST /chat              — voice chat + ElevenLabs TTS (optional auth → history saved)
-  GET  /health            — readiness probe
+  POST /auth/register       — create account
+  POST /auth/login          — get JWT token
+  GET  /history             — fetch user's event history (requires auth)
+  GET  /locations           — list saved named locations (requires auth)
+  POST /locations           — save a new named location (requires auth)
+  DELETE /locations/{id}    — remove a saved location (requires auth)
+  PATCH /locations/{id}     — rename a saved location (requires auth)
+  POST /investigate         — audio-event investigation (optional auth → history saved)
+  POST /analyze-change      — scene change detection  (optional auth → history saved)
+  POST /chat                — voice chat + ElevenLabs TTS (optional auth → history saved)
+  GET  /health              — readiness probe
 
 Env vars:
-  ELEVENLABS_API_KEY      — required for /chat audio output
-  ELEVENLABS_VOICE_ID     — optional, defaults to Rachel (21m00Tcm4TlvDq8ikWAM)
-  JWT_SECRET              — JWT signing secret (set a strong value in production)
+  ELEVENLABS_API_KEY        — required for /chat audio output
+  ELEVENLABS_VOICE_ID       — optional, defaults to Rachel (21m00Tcm4TlvDq8ikWAM)
+  GOOGLE_MAPS_API_KEY       — optional, enables reverse geocoding for saved locations
+  JWT_SECRET                — JWT signing secret (set a strong value in production)
 """
 from __future__ import annotations
 
 import base64
+import math
 import os
 import time
 from contextlib import asynccontextmanager
@@ -38,6 +44,9 @@ STATIC_DIR = DEMO_DIR / "static"
 
 _ELEVENLABS_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 _ELEVENLABS_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+_GMAPS_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+
+_MATCH_RADIUS_METERS = 100
 
 
 @asynccontextmanager
@@ -71,13 +80,58 @@ async def _elevenlabs_tts(text: str) -> Optional[str]:
     return base64.b64encode(r.content).decode()
 
 
+# ── Geolocation helpers ───────────────────────────────────────────────────────
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+async def _reverse_geocode(lat: float, lon: float) -> Optional[str]:
+    """Return a human-readable address from Google Maps, or None on any failure."""
+    if not _GMAPS_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                "https://maps.googleapis.com/maps/api/geocode/json",
+                params={"latlng": f"{lat},{lon}", "key": _GMAPS_KEY,
+                        "result_type": "street_address|premise"},
+                timeout=5.0,
+            )
+        data = r.json()
+        results = data.get("results", [])
+        return results[0]["formatted_address"] if results else None
+    except Exception:
+        return None
+
+
+async def _resolve_location(
+    user_id: Optional[int],
+    lat: Optional[float],
+    lon: Optional[float],
+) -> tuple[Optional[int], Optional[str]]:
+    """Match lat/lon against user's saved locations. Returns (id, name) or (None, None)."""
+    if not user_id or lat is None or lon is None:
+        return None, None
+    saved = await database.get_locations(user_id)
+    for loc in saved:
+        if _haversine_m(lat, lon, loc["lat"], loc["lon"]) <= _MATCH_RADIUS_METERS:
+            return loc["id"], loc["name"]
+    return None, None
+
+
 # ── History context builder ───────────────────────────────────────────────────
 
 def _build_context(history: list[dict]) -> str:
     """
     Format recent history into a prompt context string.
     When the real model is integrated, inject this string before the user's query
-    so the model has memory of past observations.
+    so the model has memory of past observations including where they happened.
     """
     if not history:
         return ""
@@ -85,12 +139,13 @@ def _build_context(history: list[dict]) -> str:
     for h in history[-8:]:
         ts = h["created_at"][:16].replace("T", " ")
         snippet = h["response"][:100].rstrip(".")
+        loc_str = f" at {h['location_name']}" if h.get("location_name") else ""
         if h["type"] == "chat":
-            lines.append(f'  [{ts}] User said: "{h["input_text"]}" → "{snippet}…"')
+            lines.append(f'  [{ts}]{loc_str} User said: "{h["input_text"]}" → "{snippet}…"')
         elif h["type"] == "investigate":
-            lines.append(f'  [{ts}] Heard {h["event"]} → "{snippet}…"')
+            lines.append(f'  [{ts}]{loc_str} Heard {h["event"]} → "{snippet}…"')
         elif h["type"] == "change":
-            lines.append(f'  [{ts}] Scene changed → "{snippet}…"')
+            lines.append(f'  [{ts}]{loc_str} Scene changed → "{snippet}…"')
     return "\n".join(lines)
 
 
@@ -139,12 +194,13 @@ async def login(req: AuthReq) -> AuthResp:
 @app.get("/history")
 async def get_history(
     limit: int = 20,
+    location_id: Optional[int] = None,
     current_user: dict = Depends(auth.require_user),
 ) -> list[dict]:
-    return await database.get_history(current_user["id"], limit=limit)
+    return await database.get_history(current_user["id"], limit=limit, location_id=location_id)
 
 
-# ── Profile endpoints ────────────────────────────────────────────────────────
+# ── Profile endpoints ─────────────────────────────────────────────────────────
 
 class ProfileResp(BaseModel):
     username: str
@@ -195,6 +251,61 @@ async def update_profile(
     return {"ok": True}
 
 
+# ── Location endpoints ────────────────────────────────────────────────────────
+
+class CreateLocationReq(BaseModel):
+    name: str
+    lat: float
+    lon: float
+
+
+class UpdateLocationReq(BaseModel):
+    name: str
+
+
+@app.get("/locations")
+async def list_locations(current_user: dict = Depends(auth.require_user)) -> list[dict]:
+    return await database.get_locations(current_user["id"])
+
+
+@app.post("/locations", status_code=201)
+async def create_location(
+    req: CreateLocationReq,
+    current_user: dict = Depends(auth.require_user),
+) -> dict:
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Location name cannot be empty.")
+    if not (-90 <= req.lat <= 90) or not (-180 <= req.lon <= 180):
+        raise HTTPException(status_code=400, detail="Invalid coordinates.")
+    address = await _reverse_geocode(req.lat, req.lon)
+    loc_id = await database.add_location(current_user["id"], name, req.lat, req.lon, address)
+    locs = await database.get_locations(current_user["id"])
+    return next((l for l in locs if l["id"] == loc_id), {"id": loc_id, "name": name})
+
+
+@app.patch("/locations/{location_id}")
+async def rename_location(
+    location_id: int,
+    req: UpdateLocationReq,
+    current_user: dict = Depends(auth.require_user),
+) -> dict:
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Location name cannot be empty.")
+    await database.update_location_name(location_id, current_user["id"], name)
+    return {"ok": True}
+
+
+@app.delete("/locations/{location_id}")
+async def remove_location(
+    location_id: int,
+    current_user: dict = Depends(auth.require_user),
+) -> dict:
+    await database.delete_location(location_id, current_user["id"])
+    return {"ok": True}
+
+
 # ── Investigation endpoints ───────────────────────────────────────────────────
 
 STUB_RESPONSES: dict[str, str] = {
@@ -216,6 +327,8 @@ DEFAULT_STUB = "Stub mode: SeeingEye model not yet connected."
 class InvestigateReq(BaseModel):
     event: str
     image_b64: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
 
 
 class InvestigateResp(BaseModel):
@@ -239,12 +352,17 @@ async def investigate(
     response = STUB_RESPONSES.get(req.event, DEFAULT_STUB)
 
     if current_user:
+        loc_id, loc_name = await _resolve_location(current_user["id"], req.lat, req.lon)
         await database.add_history(
             user_id=current_user["id"],
             type="investigate",
             response=response,
             input_text=req.event,
             event=req.event,
+            lat=req.lat,
+            lon=req.lon,
+            location_id=loc_id,
+            location_name=loc_name,
         )
 
     return InvestigateResp(
@@ -259,6 +377,8 @@ async def investigate(
 class ChangeReq(BaseModel):
     frame0_b64: str
     frame1_b64: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
 
 
 class ChangeResp(BaseModel):
@@ -270,7 +390,7 @@ class ChangeResp(BaseModel):
 # TODO: replace stub with real multi-image VLM call once integrated
 @app.post("/analyze-change", response_model=ChangeResp)
 async def analyze_change(
-    _req: ChangeReq,
+    req: ChangeReq,
     current_user: Optional[dict] = Depends(auth.optional_user),
 ) -> ChangeResp:
     start = time.time()
@@ -280,10 +400,15 @@ async def analyze_change(
     response = STUB_RESPONSES["_change"]
 
     if current_user:
+        loc_id, loc_name = await _resolve_location(current_user["id"], req.lat, req.lon)
         await database.add_history(
             user_id=current_user["id"],
             type="change",
             response=response,
+            lat=req.lat,
+            lon=req.lon,
+            location_id=loc_id,
+            location_name=loc_name,
         )
 
     return ChangeResp(
@@ -297,6 +422,8 @@ async def analyze_change(
 
 class ChatReq(BaseModel):
     text: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
 
 
 class ChatResp(BaseModel):
@@ -332,11 +459,16 @@ async def chat(
     audio_b64 = await _elevenlabs_tts(stub_response)
 
     if current_user:
+        loc_id, loc_name = await _resolve_location(current_user["id"], req.lat, req.lon)
         await database.add_history(
             user_id=current_user["id"],
             type="chat",
             response=stub_response,
             input_text=req.text,
+            lat=req.lat,
+            lon=req.lon,
+            location_id=loc_id,
+            location_name=loc_name,
         )
 
     return ChatResp(
@@ -359,4 +491,9 @@ async def root() -> FileResponse:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "mode": "stub", "elevenlabs": bool(_ELEVENLABS_KEY)}
+    return {
+        "ok": True,
+        "mode": "stub",
+        "elevenlabs": bool(_ELEVENLABS_KEY),
+        "geocoding": bool(_GMAPS_KEY),
+    }

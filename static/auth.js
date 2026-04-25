@@ -96,9 +96,9 @@ async function fadeOutPanel(el) {
 async function fadeInPanel(el) {
   el.style.display = "flex";
   el.style.opacity = "0";
-  el.style.pointerEvents = "";
   await sleep(16); // one frame so display change paints first
   el.style.opacity = "1";
+  el.style.pointerEvents = "auto";
 }
 
 // ── View transitions ──────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ function showApp(displayName) {
   // ensure app panel is visible, profile panel hidden
   rightApp.style.display      = "flex";
   rightApp.style.opacity      = "1";
-  rightApp.style.pointerEvents = "";
+  rightApp.style.pointerEvents = "auto";
   rightProfile.style.display  = "none";
 }
 
@@ -125,8 +125,14 @@ function showAuth() {
 async function showProfile() {
   userDropdown.classList.remove("open");
   await fadeOutPanel(rightApp);
-  await fetchAndRenderProfile();
-  await refreshHistory();
+  await Promise.all([fetchAndRenderProfile(), loadLocations(), refreshHistory()]);
+  // get coords so "Save here" button can be enabled
+  pendingCoords = null;
+  saveLocationBtn.disabled = true;
+  _getCoords().then((c) => {
+    pendingCoords = c;
+    saveLocationBtn.disabled = !c;
+  });
   await fadeInPanel(rightProfile);
 }
 
@@ -186,6 +192,113 @@ async function fetchAndRenderProfile() {
     editDisplayName.value          = p.display_name;
   } catch { /* non-critical */ }
 }
+
+// ── Saved locations ───────────────────────────────────────────────────────────
+const saveLocationForm    = document.getElementById("save-location-form");
+const locationNameInput   = document.getElementById("location-name-input");
+const saveLocationBtn     = document.getElementById("save-location-btn");
+const locationMsg         = document.getElementById("location-msg");
+const locationsListEl     = document.getElementById("locations-list");
+const locationFilterEl    = document.getElementById("history-location-filter");
+
+let pendingCoords = null; // set when profile opens
+
+async function _getCoords() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      ()  => resolve(null),
+      { timeout: 4000, maximumAge: 30_000 },
+    );
+  });
+}
+
+function populateLocationFilter(locations) {
+  while (locationFilterEl.options.length > 1) locationFilterEl.remove(1);
+  locations.forEach((loc) => {
+    const opt = document.createElement("option");
+    opt.value = loc.id;
+    opt.textContent = loc.name;
+    locationFilterEl.appendChild(opt);
+  });
+}
+
+function renderLocations(locations) {
+  if (!locations.length) {
+    locationsListEl.innerHTML = '<p class="muted history-empty" style="margin:4px 0">No saved locations yet.</p>';
+    return;
+  }
+  locationsListEl.innerHTML = locations.map((loc) => `
+    <li class="location-item" data-id="${loc.id}">
+      <div class="location-text">
+        <span class="location-name">${loc.name}</span>
+        ${loc.address ? `<span class="location-address">${loc.address}</span>` : ""}
+      </div>
+      <button class="location-delete" data-id="${loc.id}" aria-label="Delete ${loc.name}">✕</button>
+    </li>`).join("");
+}
+
+async function loadLocations() {
+  try {
+    const resp = await fetch("/locations", { headers: window.getAuthHeaders() });
+    if (!resp.ok) return;
+    const locs = await resp.json();
+    renderLocations(locs);
+    populateLocationFilter(locs);
+  } catch { /* non-critical */ }
+}
+
+saveLocationForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = locationNameInput.value.trim();
+  if (!name || !pendingCoords) return;
+  hideMsg(locationMsg);
+  saveLocationBtn.disabled = true;
+  try {
+    const resp = await fetch("/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders() },
+      body: JSON.stringify({ name, ...pendingCoords }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      showMsg(locationMsg, data.detail || "Error saving location.", "error");
+    } else {
+      showMsg(locationMsg, `"${name}" saved!`, "success");
+      locationNameInput.value = "";
+      await loadLocations();
+      window.refreshMap?.();
+    }
+  } catch {
+    showMsg(locationMsg, "Network error.", "error");
+  } finally {
+    saveLocationBtn.disabled = !pendingCoords;
+  }
+});
+
+locationsListEl.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".location-delete");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  try {
+    await fetch(`/locations/${id}`, {
+      method: "DELETE",
+      headers: window.getAuthHeaders(),
+    });
+    await loadLocations();
+    window.refreshMap?.();
+  } catch { /* non-critical */ }
+});
+
+locationFilterEl.addEventListener("change", async () => {
+  const locationId = locationFilterEl.value || null;
+  const url = locationId ? `/history?location_id=${locationId}` : "/history";
+  try {
+    const resp = await fetch(url, { headers: window.getAuthHeaders() });
+    if (resp.ok) renderHistory(await resp.json());
+  } catch { /* non-critical */ }
+});
 
 // ── Edit display name ─────────────────────────────────────────────────────────
 displayNameForm.addEventListener("submit", async (e) => {
@@ -260,11 +373,13 @@ function renderHistory(entries) {
       h.type === "chat"   ? "Voice chat"   :
       h.type === "change" ? "Scene change" :
       `Heard: ${h.event || h.input_text}`;
+    const locChip = h.location_name
+      ? `<span class="location-chip">${h.location_name}</span>` : "";
     const inputLine = h.type === "chat" && h.input_text
       ? `<p class="history-input">You: ${h.input_text}</p>` : "";
     return `<div class="history-entry">
       <div class="history-meta">
-        <span class="history-label">${label}</span>
+        <span class="history-label">${label}${locChip}</span>
         <span class="history-time">${timeAgo(h.created_at)}</span>
       </div>
       ${inputLine}
@@ -276,7 +391,9 @@ function renderHistory(entries) {
 async function refreshHistory() {
   if (!getToken()) return;
   try {
-    const resp = await fetch("/history", { headers: window.getAuthHeaders() });
+    const locationId = locationFilterEl?.value || null;
+    const url = locationId ? `/history?location_id=${locationId}` : "/history";
+    const resp = await fetch(url, { headers: window.getAuthHeaders() });
     if (!resp.ok) return;
     renderHistory(await resp.json());
   } catch { /* non-critical */ }

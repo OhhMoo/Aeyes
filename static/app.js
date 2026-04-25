@@ -237,6 +237,18 @@ function hashDiff(a, b) {
   return sum / a.length;
 }
 
+// ---------------- Geolocation ----------------
+async function getCurrentCoords() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      ()    => resolve(null),
+      { timeout: 3000, maximumAge: 30_000 },
+    );
+  });
+}
+
 // ---------------- Trigger handlers ----------------
 async function runInvestigation(eventKey) {
   if (busy) return;
@@ -249,7 +261,10 @@ async function runInvestigation(eventKey) {
   showLatency(null);
 
   setStatus("Investigating…", "investigating");
-  let triggerFrame = clipBuffer.captureNow();
+  const [triggerFrame, coords] = await Promise.all([
+    Promise.resolve(clipBuffer.captureNow()),
+    getCurrentCoords(),
+  ]);
   if (!triggerFrame) {
     setStatus("Camera not ready", "error");
     busy = false;
@@ -262,7 +277,7 @@ async function runInvestigation(eventKey) {
     const resp = await fetch("/investigate", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
-      body: JSON.stringify({ event: eventKey, image_b64: triggerFrame.dataUrl }),
+      body: JSON.stringify({ event: eventKey, image_b64: triggerFrame.dataUrl, ...(coords || {}) }),
     });
     const data = await resp.json();
     const wallElapsed = (performance.now() - tStart) / 1000;
@@ -304,13 +319,14 @@ async function runChangeAnalysis() {
 
   let [oldest, newest] = clipBuffer.sample("edges");
   showLastFrame(newest.dataUrl);
+  const coords = await getCurrentCoords();
 
   const tStart = performance.now();
   try {
     const resp = await fetch("/analyze-change", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
-      body: JSON.stringify({ frame0_b64: oldest.dataUrl, frame1_b64: newest.dataUrl }),
+      body: JSON.stringify({ frame0_b64: oldest.dataUrl, frame1_b64: newest.dataUrl, ...(coords || {}) }),
     });
     const data = await resp.json();
     const wallElapsed = (performance.now() - tStart) / 1000;
@@ -430,11 +446,12 @@ async function runChat(text) {
   voiceResponseEl.textContent = "…";
   voiceResponseEl.hidden = false;
 
+  const coords = await getCurrentCoords();
   try {
     const resp = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...(coords || {}) }),
     });
     const data = await resp.json();
     voiceResponseEl.textContent = data.response;

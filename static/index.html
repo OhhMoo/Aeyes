@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Aeyes — auto scene narration</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
 
@@ -41,17 +42,27 @@
   <main>
     <div id="app-view">
 
-      <!-- Left: always-visible camera -->
+      <!-- Left: camera / map tabs -->
       <div id="left-col">
         <header>
           <h1>Aeyes</h1>
           <p class="tagline">A camera that narrates what you can't see.</p>
+          <div id="left-tabs">
+            <button id="tab-camera" class="left-tab active">Camera</button>
+            <button id="tab-map"    class="left-tab">Map</button>
+          </div>
         </header>
+
         <div id="camera-section">
           <video id="camera" autoplay muted playsinline></video>
           <canvas id="capture-canvas" hidden></canvas>
           <img id="last-frame" alt="last captured frame" hidden />
         </div>
+
+        <div id="map-section" hidden>
+          <div id="map"></div>
+        </div>
+
         <footer>
           <p class="muted">Auto-captures every 5 s · No frames stored · Vision via SeeingEye</p>
         </footer>
@@ -89,6 +100,11 @@
 
           <details id="history-panel">
             <summary>History</summary>
+            <div id="history-filter-bar">
+              <select id="history-location-filter">
+                <option value="">All locations</option>
+              </select>
+            </div>
             <div id="history-list"><p class="muted history-empty">No history yet.</p></div>
           </details>
         </div>
@@ -124,14 +140,26 @@
             </form>
             <p id="password-msg" class="form-msg" hidden></p>
           </div>
+
+          <div class="profile-card" id="locations-card">
+            <h3 class="section-heading">Saved locations</h3>
+            <form id="save-location-form" class="inline-form">
+              <input id="location-name-input" type="text" placeholder='e.g. "Home"' autocomplete="off" />
+              <button type="submit" class="primary" id="save-location-btn" disabled>Save here</button>
+            </form>
+            <p id="location-msg" class="form-msg" hidden></p>
+            <ul id="locations-list" class="locations-list"></ul>
+          </div>
         </div>
 
       </div><!-- #right-col -->
     </div><!-- #app-view -->
   </main>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/static/clip_buffer.js"></script>
   <script src="/static/auth.js"></script>
+  <script src="/static/map.js"></script>
   <script src="/static/app.js" type="module"></script>
 </body>
 </html>
