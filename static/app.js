@@ -33,8 +33,8 @@ const CHANGE_THRESHOLD = 8;
 // actually saw, then auto-evicts once they cross CAPTURE_TTL_MS. The rolling
 // ClipBuffer is still pruned aggressively after each request; this panel is
 // a separate, time-bounded record for review/demo.
-const CAPTURE_TTL_MS = 5 * 60 * 1000;       // 5 minutes
-const CAPTURE_PRUNE_INTERVAL_MS = 30_000;   // re-sweep + re-render every 30 s
+const CAPTURE_TTL_MS = 60_000;              // 1 minute
+const CAPTURE_PRUNE_INTERVAL_MS = 10_000;   // re-sweep + re-render every 10 s
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status-text");

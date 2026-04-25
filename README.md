@@ -85,10 +85,10 @@ No frames are persisted to disk. Two distinct in-memory caches:
    released as soon as the request finishes. Worst-case footprint: ~100 KB.
 2. **Recent captures sub-window**. A separate, time-bounded record of every
    frame the model actually saw, with timestamp + source label. Entries
-   auto-evict after `CAPTURE_TTL_MS` (default 5 min) — both proactively as
-   new captures arrive and via a periodic sweep every 30 s, so old entries
+   auto-evict after `CAPTURE_TTL_MS` (default 1 min) — both proactively as
+   new captures arrive and via a periodic sweep every 10 s, so old entries
    vanish even if nothing else is happening. Worst-case at peak (auto-capture
-   firing on every change for 5 min): ~60 frames × 50 KB ≈ 3 MB.
+   firing on every change for 1 min): ~12 frames × 50 KB ≈ 600 KB.
 
 History is persisted server-side in `aeyes.db` only for authenticated users
 (via `auth.optional_user`). Unauthenticated requests still work; they just
@@ -133,7 +133,7 @@ automatically. The auto-capture loop is the default running state — use
 **"Describe surroundings"** for a fresh on-demand description, **"What
 changed?"** for an explicit diff, **"Hold to speak"** to ask the model a
 question by voice. The **"Recent captures"** panel on the right shows
-thumbnails of every frame the model actually saw, auto-evicting after 5 min.
+thumbnails of every frame the model actually saw, auto-evicting after 1 min.
 
 `GET /health` returns `{"ok": true, "mode": "stub", "elevenlabs": <bool>}`.
 
@@ -205,9 +205,9 @@ temperature = 0.2
   terser. Static scenes typically diff at 1–3; an object moving usually
   diffs 10+.
 - `CAPTURE_TTL_MS` (frontend, `app.js`): how long thumbnails live in the
-  "Recent captures" sub-window before being auto-evicted. Default 5 min.
+  "Recent captures" sub-window before being auto-evicted. Default 1 min.
 - `CAPTURE_PRUNE_INTERVAL_MS` (frontend, `app.js`): how often the eviction
-  sweep runs even when no new captures arrive. Default 30 s.
+  sweep runs even when no new captures arrive. Default 10 s.
 - `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length
   and sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps.
 - `STUB_RESPONSES` (backend, `server.py`, **stub mode**): canned reply per
