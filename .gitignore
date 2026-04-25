@@ -6,3 +6,9 @@ venv/
 .env
 .DS_Store
 *.log
+
+# SQLite databases (the existing aeyes.db is grandfathered in via prior commit;
+# this rule prevents new schema variants / WAL/SHM journals from sneaking in).
+*.db-journal
+*.db-wal
+*.db-shm

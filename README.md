@@ -1,10 +1,14 @@
 # Aeyes — Auto-Capture Visual Narration
 
-A hackathon-style web demo that helps blind users understand what's in front of
-the camera. The browser captures a still every 5 seconds, sends it to the
-underlying [SeeingEye](../README.md#about-seeingeye-the-underlying-framework)
-multi-agent pipeline for description, and reads the answer aloud. A second mode
-compares two frames sampled ~10 seconds apart to describe what has changed.
+A hackathon-style web demo that helps blind users understand what's in front
+of the camera. The browser captures a still every 5 seconds (or on demand),
+sends it to the underlying
+[SeeingEye](../README.md#about-seeingeye-the-underlying-framework) multi-agent
+pipeline for description, and reads the answer aloud. Two complementary
+on-demand modes: **"What just changed?"** compares two frames sampled ~10 s
+apart, and **"Hold to speak"** lets the user ask follow-up questions by voice.
+Logged-in users get persistent per-account history that's fed back to the
+model as memory.
 
 ## Why no audio detection?
 
@@ -12,34 +16,42 @@ An earlier version listened for environmental sounds (glass breaking, alarms,
 crashes) with on-device YAMNet and triggered investigations on those events.
 That premise was wrong: blind users *aren't deaf*. They already hear the glass
 break — what they need is for the model to tell them what they *can't* hear.
-The audio detection layer was removed; the value lives in the visual
-description, not in echoing what the user already perceived.
+The audio-detection layer was removed; the value lives in the visual
+description and in voice-driven Q&A, not in echoing what the user already
+perceived.
 
-> **Backend status — stub mode.** `server.py` currently returns canned strings
-> from a `STUB_RESPONSES` map. The SeeingEye Translator → Reasoner pipeline,
-> OpenAI key handling, and vLLM Reasoner described below are the *target*
-> architecture and are marked with `# TODO` in `server.py`. The browser side
-> (camera, ClipBuffer, auto-capture loop, TTS) is fully functional against the
-> stub.
+> **Backend status — stub mode.** `server.py` returns canned strings from a
+> `STUB_RESPONSES` map, plus a stub `/chat` reply. The SeeingEye Translator →
+> Reasoner pipeline and OpenAI vision calls described below are the *target*
+> architecture and are marked with `# TODO` in `server.py`. The browser
+> (camera, ClipBuffer, auto-capture loop, voice chat, auth, profile, history)
+> is fully functional against the stub. ElevenLabs TTS for `/chat` is real
+> when `ELEVENLABS_API_KEY` is set; otherwise the browser falls back to
+> `speechSynthesis`.
 
 ## Architecture
 
 ```
-Browser:  camera → ClipBuffer       → 10 s rolling window of JPEG frames
-                       │              (sampled at 1 fps, sample()-on-demand)
-                       │
-          5 s timer ───┘   triggers /investigate with event=_describe
-                       │
-                       ▼
-Server:   POST /investigate {event, image_b64}
-              → SeeingEye FlowExecutor (Translator → Reasoner)
-          POST /analyze-change {frame0, frame1}
-              → multi-image VLM call
-                       │
-Browser:  speechSynthesis.speak(response)
-                       │
-                       └── after each request: clip cache pruned
-                                              to most recent frame only
+Browser                                       Server (FastAPI)
+─────────                                     ─────────────────
+auth.js   ──login/register──→  /auth/login, /auth/register  ──→  SQLite (users)
+                ↓                                                      │
+            JWT in localStorage                                        │
+                                                                       │
+camera → ClipBuffer  ─10 s rolling window of JPEGs                     │
+              │       (sampled at 1 fps, sample()-on-demand)           │
+              ▼                                                        │
+   5 s timer → /investigate {event=_describe, image_b64}  ─────→  stub describe
+   "What changed?" → /analyze-change {frame0, frame1}     ─────→  stub diff
+   "Hold to speak" → /chat {text}                         ─────→  stub + ElevenLabs MP3
+              │                                                        │
+              │   each successful request appends to                   ▼
+              │   ─────────────────────────────────────────→  SQLite (history)
+              ▼
+   speechSynthesis.speak(text)   OR   audio.play(audio_b64)
+              │
+              └── after each request: clip cache pruned to most recent frame only
+              └── on success: window.refreshHistory() repopulates the panel
 ```
 
 ### Clip → frame sampling
@@ -64,24 +76,53 @@ No frames are persisted to disk. The `ClipBuffer` is a fixed-size in-memory
 window (max 11 frames at 1 fps). After each `/investigate` or `/analyze-change`
 call returns, the buffer is collapsed to the single most recent frame and the
 trigger-moment data URL is released. The captured-still preview that flashes
-in the camera area is auto-hidden after 8 s. Worst-case memory footprint is
+in the camera area is auto-hidden after 8 s. Worst-case in-memory footprint is
 one to two ~50 KB JPEG strings at any moment.
+
+History is persisted server-side in `aeyes.db` only for authenticated users
+(via `auth.optional_user`). Unauthenticated requests still work; they just
+aren't recorded.
 
 ## Running it
 
 ### Prerequisites
 
-- Install the runtime deps:
-  ```bash
-  pip install -r requirements.txt
-  ```
-- **Stub mode (current default):** nothing else required. No API keys, no GPU.
-- **For the target SeeingEye pipeline (not currently wired):** an `OPENAI_API_KEY`
-  for the hosted Translator (gpt-4o), and *optionally* a vLLM server running
-  `Qwen/Qwen3-8B` on `http://localhost:8001/v1` to back the Reasoner. See "vLLM"
-  below; if you don't have a GPU, see "Fully-hosted fallback" to skip vLLM.
+```bash
+pip install -r requirements.txt
+```
 
-### vLLM (self-hosted Reasoner — needs ~16GB VRAM)
+Required for first run: nothing. The SQLite DB and tables are created
+automatically on startup (`database.init_db` runs in the FastAPI lifespan
+hook).
+
+Optional environment variables:
+
+| Var | Effect when set |
+|---|---|
+| `ELEVENLABS_API_KEY` | `/chat` returns a real MP3 voice reply (Rachel by default) instead of relying on browser TTS. |
+| `ELEVENLABS_VOICE_ID` | Override the ElevenLabs voice ID (default: `21m00Tcm4TlvDq8ikWAM`, Rachel). |
+| `JWT_SECRET` | Sign auth tokens with a real secret. **Set this for any non-local deployment** — the dev default is `aeyes-dev-secret-change-in-prod`. |
+
+When SeeingEye is wired back into `/investigate` and `/analyze-change`, you'll
+also need an `OPENAI_API_KEY` for the hosted Translator and *optionally* a
+vLLM server backing the Reasoner — see "vLLM" and "Fully-hosted fallback"
+below.
+
+### Start the server
+
+```bash
+uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Open <http://localhost:8000> in **Chrome** (camera + microphone permissions;
+`SpeechRecognition` is Chromium-only). On first visit you'll be asked to
+register. Then click **"Start auto-capture"** to begin the 5-second narration
+loop, **"Describe surroundings"** / **"What changed?"** for one-shot requests,
+or **"Hold to speak"** to ask the model a question by voice.
+
+`GET /health` returns `{"ok": true, "mode": "stub", "elevenlabs": <bool>}`.
+
+### vLLM (target — self-hosted Reasoner, ~16 GB VRAM)
 
 ```bash
 python -m vllm.entrypoints.openai.api_server \
@@ -91,10 +132,10 @@ python -m vllm.entrypoints.openai.api_server \
   --tool-call-parser hermes
 ```
 
-### Fully-hosted fallback (no GPU)
+### Fully-hosted fallback (target — no GPU)
 
-Open `src/multi-agent/config/config.toml`, find the `[llm.reasoning_api]` block, and
-swap it to OpenAI just like the translator:
+Open `src/multi-agent/config/config.toml`, find the `[llm.reasoning_api]`
+block, and swap it to OpenAI just like the translator:
 
 ```toml
 [llm.reasoning_api]
@@ -106,78 +147,96 @@ max_tokens = 1024
 temperature = 0.2
 ```
 
-No code change needed in `server.py` — once SeeingEye is reconnected, startup
-will auto-patch the `OPENAI_API_KEY` into every config block whose `base_url`
-points at `api.openai.com`.
+## Endpoints
 
-### Start the server
-
-```bash
-# Stub mode — no API key required.
-uvicorn server:app --host 0.0.0.0 --port 8000 --reload
-
-# Once SeeingEye is wired back in, also:
-# export OPENAI_API_KEY=sk-...
-```
-
-Open <http://localhost:8000> in **Chrome** (camera permission required). Grant
-camera access. Click **"Start auto-capture"** to begin the 5-second narration
-loop, or use **"Describe my surroundings"** / **"What just changed?"** for
-on-demand requests.
-
-`GET /health` returns `{"ok": true, "mode": "stub"}` today. (When SeeingEye is
-reconnected it will also report whether the API key is set and which models
-are configured.)
+| Method | Path | Auth | What it does |
+|---|---|---|---|
+| POST | `/auth/register` | none | Create a user, return a JWT. |
+| POST | `/auth/login` | none | Verify credentials, return a JWT. |
+| GET | `/profile` | required | Return user profile + history count. |
+| PATCH | `/profile` | required | Update display name and/or password. |
+| GET | `/history` | required | List the user's last N events. |
+| POST | `/investigate` | optional | Single-frame description (currently stub). Saves history when authenticated. |
+| POST | `/analyze-change` | optional | Two-frame diff (currently stub). Saves history when authenticated. |
+| POST | `/chat` | optional | Voice question → text reply + optional ElevenLabs MP3. Saves history when authenticated. |
+| GET | `/health` | none | Liveness + mode. |
 
 ## Demo plan (stage-day)
 
-1. Open the page, grant camera permissions, click **"Start auto-capture"**.
-2. Stand in front of three pre-staged scenes for ~5 s each. The page speaks a
-   description as soon as each one comes into frame:
-   - A messy desk with a (pre-broken) glass and shards.
-   - A counter with a smoking slice of toast on a plate.
-   - A floor with a fallen book and lamp.
-3. Show **"What just changed?"** by quietly removing or adding an object during
-   the demo, then pressing the button.
-4. Mention the privacy story: no frames leave the browser except for the single
-   in-flight request, and the cache is pruned after each call.
+1. Open the page → register a demo account in <10 s.
+2. Click **"Start auto-capture"**. Stand in front of three pre-staged scenes
+   for ~5 s each. The page speaks a description as soon as each one comes
+   into frame.
+3. Show **"What just changed?"** by quietly removing or adding an object
+   during the demo, then pressing the button.
+4. Hold **"Hold to speak"** and ask "what colour is the lamp on the desk?" —
+   showcases voice Q&A with optional ElevenLabs voice if the key is set.
+5. Open the corner avatar → **Profile** to show display-name + password
+   editing and history count. Click into **History** to show that prior
+   observations are remembered across sessions and (eventually) injected as
+   context when the real model lands.
+6. Privacy story: no frames leave the browser except for the single in-flight
+   request, and the in-memory cache is pruned after each call. Only the
+   text response is persisted.
 
 ## Knobs to tune
 
 - `AUTO_CAPTURE_MS` (frontend, `app.js`): interval between automatic captures.
-  Default 5 s. Raise to reduce TTS spam in slow-changing scenes; lower for
-  more responsive narration.
-- `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length and
-  sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps. Raise the fps for
-  finer change detection at the cost of more memory and per-tick JPEG encodes.
-- `STUB_RESPONSES` (backend, `server.py`, **stub mode**): canned reply per event.
-  Will be replaced by `EVENT_PROMPTS` (per-event investigative prompts) when
-  SeeingEye is reconnected — that prompt map is the hackathon "secret sauce".
-- Reasoner `max_steps` (in `src/multi-agent/config/config.toml` under `[flow]`,
-  **target architecture**): drop from 3 → 1 to cut latency at the cost of
-  reasoning depth.
+  Default 5 s. Raise to reduce TTS spam in slow-changing scenes.
+- `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length
+  and sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps.
+- `STUB_RESPONSES` (backend, `server.py`, **stub mode**): canned reply per
+  event. Will be replaced by `EVENT_PROMPTS` (per-event investigative
+  prompts) when SeeingEye is reconnected — that prompt map is the hackathon
+  "secret sauce".
+- `_build_context(...)` (backend, `server.py`): formats recent history into
+  a prompt prefix that will be injected into the real model once integrated,
+  giving it memory of past observations.
+- `_EXPIRY_HOURS` (backend, `auth.py`): JWT lifetime, default 24 h.
+- Reasoner `max_steps` (in `src/multi-agent/config/config.toml` under
+  `[flow]`, **target architecture**): drop from 3 → 1 to cut latency at the
+  cost of reasoning depth.
 
 ## File map
 
 | Path | Purpose |
 |---|---|
-| `server.py` | FastAPI app — `/investigate`, `/analyze-change`, `/health`. Currently stub mode; `# TODO` markers point to where SeeingEye will plug back in. |
-| `requirements.txt` | Stub-mode deps (FastAPI + uvicorn). The full SeeingEye pipeline will need additional packages and an external `src/multi-agent/` checkout. |
-| `static/index.html` | Minimal page: status, controls, camera preview, history. |
-| `static/app.js` | Camera init, ClipBuffer wiring, 5-second auto-capture loop, manual buttons, TTS, fetch + cache pruning. |
+| `server.py` | FastAPI app — auth, history, profile, investigate, analyze-change, chat, health. Stub responses for the model paths; `# TODO` markers point to where SeeingEye will plug back in. |
+| `auth.py` | bcrypt password hashing + PyJWT token issuance/verification. `require_user` and `optional_user` dependencies. |
+| `database.py` | aiosqlite wrappers for users (id, username, password_hash, display_name) and history (type, event, input, response, timestamp). Auto-creates schema on startup. |
+| `aeyes.db` | SQLite store. *Note: tracked in git from prior commit; not ideal — see "Cleanup follow-ups".* |
+| `requirements.txt` | fastapi, uvicorn, httpx (ElevenLabs), aiosqlite, bcrypt, PyJWT. |
+| `static/index.html` | Auth overlay, two-column layout (camera left, app/profile right), corner user menu. |
+| `static/app.js` | Camera init, ClipBuffer wiring, 5 s auto-capture loop, manual buttons, voice chat (`SpeechRecognition` → `/chat` → ElevenLabs audio), TTS, fetch + Bearer auth + cache pruning. |
+| `static/auth.js` | Auth flows (login/register/logout), profile panel (display name, password change), history panel (server-driven via `/history`). Exposes `window.getAuthHeaders` and `window.refreshHistory`. |
 | `static/clip_buffer.js` | `ClipBuffer` class — rolling 10 s frame window with named sampling strategies (`latest` / `edges` / `uniform`). The seam between "video coming in" and "images going to the model". |
-| `static/style.css` | Dark theme. |
+| `static/style.css` | Dark theme, two-column layout, panels, animations. |
 | `src/multi-agent/config/config.toml` *(target architecture, not yet active)* | `[llm.translator_api]` repointed at OpenAI; `[llm.reasoning_api]` left on local vLLM (`:8001`). |
 
 ## Limits / honest caveats
 
-- Chrome recommended. Other browsers may work, but `getUserMedia` + the
-  `image/jpeg` canvas encoder are best-tested on Chromium.
-- TTS spam in stub mode: the same canned string is spoken every 5 s. Raise
-  `AUTO_CAPTURE_MS` or stop the loop while iterating.
-- Auto-capture is unconditional — every tick fires a request, even if the
-  scene is unchanged. A planned improvement is to gate the auto-capture on
-  `/analyze-change` first and only narrate when something materially differs.
+- Chrome recommended. `SpeechRecognition` (used for voice chat) is
+  Chromium-only; the rest works in any modern browser.
+- TTS spam in stub mode: every 5 s the same canned `/investigate` reply is
+  spoken. Raise `AUTO_CAPTURE_MS` or stop the loop while iterating. A planned
+  improvement is to gate auto-capture on `/analyze-change` first and only
+  narrate when something materially differs.
+- Auth lives entirely in `localStorage` on the client; logging out clears
+  it. The JWT `_SECRET` defaults to a dev value — set `JWT_SECRET` for any
+  shared deployment.
+- ElevenLabs is optional. Without the key, `/chat.audio_b64` is `null` and
+  the browser falls back to `speechSynthesis`.
 - `/analyze-change` is designed to bypass the agent loop and call the hosted
   VLM directly with both frames — the agent loop is overkill (and too slow)
   for a frame diff. (Currently stubbed.)
+
+## Cleanup follow-ups
+
+- **`aeyes.db` is in git history.** Friend's commit checked in the SQLite
+  file with whatever dev accounts existed at the time. The included
+  `.gitignore` rules (`*.db-journal`, `*.db-wal`, `*.db-shm`) prevent the
+  WAL/SHM journals from sneaking in, but the main `.db` is grandfathered in.
+  Consider `git rm --cached aeyes.db` once dev accounts no longer need to be
+  shared, and adding `aeyes.db` to `.gitignore`.
+- **Set `JWT_SECRET`** (and rotate any token issued under the dev default)
+  before exposing the demo on any reachable network.
