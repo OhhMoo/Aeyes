@@ -1,0 +1,41 @@
+services:
+  aeyes:
+    build: .
+    image: aeyes:latest
+    ports:
+      - "8000:8000"
+    environment:
+      AEYES_ENV: prod
+      # JWT_SECRET is REQUIRED — compose refuses to start without it.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env or your shell}
+      # Optional integrations.
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+    volumes:
+      - aeyes-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Optional reverse proxy for TLS termination on a public deploy ─────────
+  # Uncomment + configure a Caddyfile to serve at https://your.domain
+  # caddy:
+  #   image: caddy:2-alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy-data:/data
+  #     - caddy-config:/config
+  #   depends_on:
+  #     - aeyes
+
+volumes:
+  aeyes-data:
+  # caddy-data:
+  # caddy-config:

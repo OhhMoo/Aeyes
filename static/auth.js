@@ -72,18 +72,43 @@ let currentTab = "login";
 authTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
     currentTab = tab.dataset.tab;
-    authTabs.forEach((t) => t.classList.toggle("active", t === tab));
+    authTabs.forEach((t) => {
+      const active = t === tab;
+      t.classList.toggle("active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
+    });
     authSubmitBtn.textContent = currentTab === "login" ? "Login" : "Register";
     authErrorEl.hidden = true;
+  });
+  tab.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const others = [...authTabs].filter((t) => t !== tab);
+    if (others[0]) { others[0].focus(); others[0].click(); }
   });
 });
 
 // ── Corner dropdown ───────────────────────────────────────────────────────────
+function setDropdownOpen(open) {
+  userDropdown.classList.toggle("open", open);
+  userMenuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    // Focus first menuitem so keyboard users can navigate.
+    userDropdown.querySelector("button")?.focus();
+  }
+}
+
 userMenuBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  userDropdown.classList.toggle("open");
+  setDropdownOpen(!userDropdown.classList.contains("open"));
 });
-document.addEventListener("click", () => userDropdown.classList.remove("open"));
+document.addEventListener("click", () => setDropdownOpen(false));
+userDropdown.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    setDropdownOpen(false);
+    userMenuBtn.focus();
+  }
+});
 
 // ── Splash dismiss ────────────────────────────────────────────────────────────
 let splashGone = false;
@@ -135,16 +160,20 @@ function showApp(displayName) {
   rightApp.style.pointerEvents = "auto";
   rightProfile.style.display  = "none";
   refreshHistory();
+  // Focus the primary action so keyboard users land on something useful.
+  document.getElementById("auto-btn")?.focus();
 }
 
 function showAuth() {
   authOverlay.hidden  = false;
   appView.hidden      = true;
   userMenuWrap.hidden = true;
+  // Focus the username field so keyboard/SR users can start typing immediately.
+  authUsername?.focus();
 }
 
 async function showProfile() {
-  userDropdown.classList.remove("open");
+  setDropdownOpen(false);
   await fadeOutPanel(rightApp);
   await Promise.all([fetchAndRenderProfile(), loadLocations(), refreshHistory()]);
   // get coords so "Save here" button can be enabled
@@ -155,11 +184,13 @@ async function showProfile() {
     saveLocationBtn.disabled = !c;
   });
   await fadeInPanel(rightProfile);
+  backBtn?.focus();
 }
 
 async function showAppView() {
   await fadeOutPanel(rightProfile);
   await fadeInPanel(rightApp);
+  document.getElementById("auto-btn")?.focus();
 }
 
 // ── Auth form ─────────────────────────────────────────────────────────────────
@@ -412,7 +443,7 @@ function renderHistory(entries) {
     // show it inline. Older entries gracefully fall back to text-only.
     const thumb = window.getCaptureNear?.(h.created_at);
     const thumbHtml = thumb
-      ? `<img class="history-thumb" src="${thumb}" alt="captured frame" loading="lazy" />`
+      ? `<img class="history-thumb" src="${thumb}" alt="" loading="lazy" />`
       : "";
     return `<div class="history-entry">
       <div class="history-row">
@@ -443,6 +474,14 @@ async function refreshHistory() {
   } catch { /* non-critical */ }
 }
 window.refreshHistory = refreshHistory;
+
+// Used by map.js's popup "Show history at this location" button so the
+// coupling between the map and the history filter stays one-way.
+window.filterHistoryByLocation = function (locationId) {
+  if (!locationFilterEl) return;
+  locationFilterEl.value = locationId == null ? "" : String(locationId);
+  locationFilterEl.dispatchEvent(new Event("change"));
+};
 
 // ── Auto-cluster suggestion ──────────────────────────────────────────────────
 //

@@ -7,8 +7,18 @@ venv/
 .DS_Store
 *.log
 
-# SQLite databases (the existing aeyes.db is grandfathered in via prior commit;
-# this rule prevents new schema variants / WAL/SHM journals from sneaking in).
+# SQLite databases — local data, never tracked.
+# Note: aeyes.db remains in git history from prior commits; use `git filter-repo`
+# to scrub it if the legacy dev accounts there are sensitive.
+*.db
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mkcert-issued local TLS material — per-machine, per-LAN-IP, never tracked.
+certs/

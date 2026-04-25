@@ -195,10 +195,18 @@ function initCalibration() {
 
 // ---------------- Camera + frame buffer ----------------
 async function initCamera() {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480 },
+  // Prefer rear camera on mobile (the one pointed at the user's surroundings);
+  // fall back if the device only has a front camera.
+  const ideal = {
+    video: { width: 640, height: 480, facingMode: { ideal: "environment" } },
     audio: false,
-  });
+  };
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(ideal);
+  } catch {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+  }
   cameraEl.srcObject = stream;
   await new Promise((r) => (cameraEl.onloadedmetadata = r));
   captureCanvas.width = cameraEl.videoWidth;
@@ -411,6 +419,7 @@ function startAutoCapture({ silent = false } = {}) {
   setStatus("Auto-capturing.", "listening");
   autoBtn.textContent = "Stop auto-capture";
   autoBtn.dataset.state = "running";
+  autoBtn.setAttribute("aria-pressed", "true");
   if (!silent) speak("Auto capture started.");
 }
 
@@ -421,6 +430,7 @@ function stopAutoCapture({ silent = false } = {}) {
   if (!silent) setStatus("Ready.");
   autoBtn.textContent = "Start auto-capture";
   delete autoBtn.dataset.state;
+  autoBtn.setAttribute("aria-pressed", "false");
   if (!silent) speak("Auto capture stopped.");
 }
 
@@ -435,7 +445,11 @@ function startSafeMode() {
   safeModeActive = true;
   document.body.classList.add("safe-mode-active");
   setStatus("Safe mode.", "listening");
-  if (safeModeBtn) { safeModeBtn.textContent = "Stop safe mode"; safeModeBtn.dataset.state = "safe"; }
+  if (safeModeBtn) {
+    safeModeBtn.textContent = "Stop safe mode";
+    safeModeBtn.dataset.state = "safe";
+    safeModeBtn.setAttribute("aria-pressed", "true");
+  }
 }
 
 function stopSafeMode() {
@@ -443,7 +457,11 @@ function stopSafeMode() {
   safeModeActive = false;
   document.body.classList.remove("safe-mode-active");
   setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
-  if (safeModeBtn) { safeModeBtn.textContent = "Safe mode"; delete safeModeBtn.dataset.state; }
+  if (safeModeBtn) {
+    safeModeBtn.textContent = "Safe mode";
+    delete safeModeBtn.dataset.state;
+    safeModeBtn.setAttribute("aria-pressed", "false");
+  }
 }
 
 async function runSafeMode(triggerText) {
@@ -563,6 +581,7 @@ voiceBtn.addEventListener("mousedown", () => {
   recognition = initRecognition();
   voiceBtn.classList.add("recording");
   voiceBtn.textContent = "Listening…";
+  voiceBtn.setAttribute("aria-pressed", "true");
 
   recognition.onresult = (ev) => {
     const text = ev.results[0][0].transcript.trim();
@@ -586,6 +605,7 @@ voiceBtn.addEventListener("mousedown", () => {
   recognition.onend = () => {
     voiceBtn.classList.remove("recording");
     voiceBtn.textContent = "Hold to speak";
+    voiceBtn.setAttribute("aria-pressed", "false");
   };
 
   recognition.start();
@@ -593,6 +613,15 @@ voiceBtn.addEventListener("mousedown", () => {
 
 voiceBtn.addEventListener("mouseup", () => recognition?.stop());
 voiceBtn.addEventListener("mouseleave", () => recognition?.stop());
+
+// Touch-event parallels for mobile. preventDefault on touchstart suppresses
+// the synthesized mousedown so the handler doesn't fire twice.
+voiceBtn.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  voiceBtn.dispatchEvent(new MouseEvent("mousedown"));
+}, { passive: false });
+voiceBtn.addEventListener("touchend",    () => recognition?.stop());
+voiceBtn.addEventListener("touchcancel", () => recognition?.stop());
 
 // ---------------- Wiring ----------------
 autoBtn.addEventListener("click", () => {

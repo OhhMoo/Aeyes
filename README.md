@@ -112,7 +112,11 @@ Optional environment variables:
 |---|---|
 | `ELEVENLABS_API_KEY` | `/chat` returns a real MP3 voice reply (Rachel by default) instead of relying on browser TTS. |
 | `ELEVENLABS_VOICE_ID` | Override the ElevenLabs voice ID (default: `21m00Tcm4TlvDq8ikWAM`, Rachel). |
-| `JWT_SECRET` | Sign auth tokens with a real secret. **Set this for any non-local deployment** — the dev default is `aeyes-dev-secret-change-in-prod`. |
+| `JWT_SECRET` | Sign auth tokens with a real secret. **Required when `AEYES_ENV=prod`** — the dev default is `aeyes-dev-secret-change-in-prod`. |
+| `AEYES_ENV` | `dev` (default) or `prod`. In `prod`, the server refuses to start unless `JWT_SECRET` is set to a non-default value. |
+| `AEYES_DB_PATH` | Override the SQLite path. Defaults to `aeyes.db` next to `database.py`. Used by the Docker image to point at a mounted volume. |
+| `AEYES_SKIP_SECRET_CHECK` | Set to `1` to bypass the JWT-secret check (test fixtures only — never in production). |
+| `GOOGLE_MAPS_API_KEY` | Reverse-geocode lat/lon into addresses for saved locations. |
 
 When SeeingEye is wired back into `/investigate` and `/analyze-change`, you'll
 also need an `OPENAI_API_KEY` for the hosted Translator and *optionally* a
@@ -124,6 +128,101 @@ below.
 ```bash
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+### Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest                                     # 41 tests, ~12 s
+pytest --cov=server --cov=auth --cov=database --cov-report=term
+```
+
+CI runs the same suite on every push and PR via `.github/workflows/test.yml`.
+
+### LAN demo on a phone (HTTPS via mkcert)
+
+Camera, mic, geolocation, and `SpeechRecognition` only work in a "secure
+context" on phones. `localhost` is exempt; LAN IPs over plain HTTP are not.
+The included launcher generates a per-LAN-IP cert via `mkcert` and starts
+uvicorn with TLS.
+
+**One-time setup on the laptop:**
+
+```bash
+choco install mkcert    # or: scoop install mkcert  (macOS: brew install mkcert)
+mkcert -install         # installs a local root CA into the OS trust store
+```
+
+**One-time setup on each phone** — install the mkcert root CA so the phone
+trusts certs you sign locally:
+
+```bash
+mkcert -CAROOT          # prints the dir holding rootCA.pem
+```
+
+- **iOS:** AirDrop `rootCA.pem` to the phone → tap to install profile →
+  Settings → General → VPN & Device Management → install. Then Settings →
+  General → About → Certificate Trust Settings → toggle on the "mkcert"
+  root. (Apple buries this on purpose; it's a one-time pain.)
+- **Android (Chrome):** copy `rootCA.pem` to the phone → Settings → Security
+  → Encryption & credentials → Install a certificate → CA certificate →
+  pick the file. Some Android versions only honor user-installed roots
+  inside Chrome, not all apps — Chrome is what we need.
+
+**Each demo:**
+
+```bash
+python scripts/dev_https.py
+```
+
+The script prints both the localhost URL and the LAN URL. Open the LAN URL
+on the phone (must be on the same wifi). On first load the phone prompts
+for camera + mic + location — accept all three. iOS users: Share → Add to
+Home Screen, then launch from the icon for fullscreen.
+
+**When wifi changes:** the LAN IP changes too, so the cert no longer
+matches. Re-run with `--regen`:
+
+```bash
+python scripts/dev_https.py --regen
+```
+
+The cached IP lives in `certs/.issued-for`; the script auto-regenerates
+when it sees a mismatch, so `--regen` is mostly only needed if the cert
+gets out of sync with what mkcert thinks.
+
+### Docker
+
+```bash
+JWT_SECRET=$(openssl rand -hex 32) docker compose up --build
+```
+
+The image runs in `AEYES_ENV=prod` mode and refuses to start without a real
+`JWT_SECRET`. SQLite is stored in a named volume (`aeyes-data:/app/data`) so
+data survives `down`/`up`. A commented-out `caddy` service stub in
+`docker-compose.yml` is the recommended TLS termination path for any public
+deploy.
+
+### Accessibility
+
+The target user is blind/low-vision, so accessibility is treated as a hard
+requirement, not a nice-to-have. What's covered:
+- Skip link first in tab order.
+- ARIA tabs pattern with arrow-key roving tabindex on Camera/Map and
+  Login/Register tabs.
+- `aria-pressed` on every toggle button (auto-capture, voice, safe mode).
+- `role="status"` + `aria-live` on the response and voice-response panels.
+- Focus moves into overlays on open and back to the trigger on close
+  (auth → username field, dropdown → first menuitem, profile → back button).
+- Escape closes the user dropdown and returns focus to the menu button.
+- `prefers-reduced-motion` short-circuits splash, panel-swap, and pulse
+  animations.
+- High-contrast focus ring on tabs whose `.active` background is the accent.
+- Decorative `alt=""` on history thumbnails (the response text alongside is
+  the semantic content) to avoid SR repetition.
+
+Test with NVDA + Firefox on Windows for primary coverage; spot-check
+VoiceOver on iOS Safari for the mobile install path.
 
 Open <http://localhost:8000> in **Chrome** (camera + microphone permissions;
 `SpeechRecognition` is Chromium-only). On first visit you'll be asked to
@@ -259,13 +358,25 @@ temperature = 0.2
   VLM directly with both frames — the agent loop is overkill (and too slow)
   for a frame diff. (Currently stubbed.)
 
+### Fresh database
+
+`init_db` (in `database.py`) creates the schema on startup if missing, so
+deleting the file resets all accounts and history:
+
+```bash
+rm aeyes.db && uvicorn server:app --reload
+```
+
+`aeyes.db` is `.gitignore`d, so a fresh clone starts empty. The legacy
+dev-account DB is still in git history from prior commits; if those
+accounts are sensitive, scrub with `git filter-repo --invert-paths --path
+aeyes.db` (force-push, coordinate with collaborators).
+
 ## Cleanup follow-ups
 
-- **`aeyes.db` is in git history.** Friend's commit checked in the SQLite
-  file with whatever dev accounts existed at the time. The included
-  `.gitignore` rules (`*.db-journal`, `*.db-wal`, `*.db-shm`) prevent the
-  WAL/SHM journals from sneaking in, but the main `.db` is grandfathered in.
-  Consider `git rm --cached aeyes.db` once dev accounts no longer need to be
-  shared, and adding `aeyes.db` to `.gitignore`.
-- **Set `JWT_SECRET`** (and rotate any token issued under the dev default)
-  before exposing the demo on any reachable network.
+- **JWT secret rotation.** Tokens issued under the dev default
+  (`aeyes-dev-secret-change-in-prod`) remain valid against the new secret
+  only if the secret is unchanged. Rotate before the first prod deploy and
+  expect existing sessions to be invalidated.
+- **`aeyes.db` history.** The file is no longer tracked, but historical
+  commits still contain it. See `git filter-repo` note above.

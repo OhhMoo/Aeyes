@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
 
-DB_PATH = Path(__file__).parent / "aeyes.db"
+# Override via AEYES_DB_PATH (used by the Docker image to point at a mounted volume).
+DB_PATH = Path(os.environ.get("AEYES_DB_PATH") or (Path(__file__).parent / "aeyes.db"))
 
 
 async def init_db() -> None:

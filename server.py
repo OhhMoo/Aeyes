@@ -36,10 +36,13 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 import auth
 import database
@@ -50,6 +53,8 @@ STATIC_DIR = DEMO_DIR / "static"
 _ELEVENLABS_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 _ELEVENLABS_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 _GMAPS_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+_AEYES_ENV = os.environ.get("AEYES_ENV", "dev")
+_IS_PROD = _AEYES_ENV == "prod"
 
 _MATCH_RADIUS_METERS = 100
 
@@ -61,6 +66,42 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Aeyes Demo (stub)", lifespan=lifespan)
+
+# Rate limiter — enabled only in prod so tests + local dev aren't throttled.
+# Token-keyed limiting is the upgrade path: replace `get_remote_address` with
+# a `key_func` that prefers `Authorization` header so NAT'd users don't share
+# a bucket. In-memory backend doesn't survive restarts and won't share across
+# `--workers N` — needs Redis if scaled horizontally.
+limiter = Limiter(key_func=get_remote_address, enabled=_IS_PROD)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if _IS_PROD:
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # CSP — allow only what the app actually needs.
+    # `unpkg.com` for Leaflet JS+CSS; `cartocdn.com` for OSM tiles; data: + blob:
+    # for camera frames and ElevenLabs MP3 blobs. `'unsafe-inline'` on style-src
+    # is needed because map.js injects an inline <style> for the position-marker
+    # ping animation; follow-up cleanup is to move it to style.css.
+    # No CORSMiddleware is added — the frontend is same-origin (served by
+    # FastAPI's StaticFiles), and adding permissive CORS would be a regression.
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; "
+        "img-src 'self' data: blob: https://*.basemaps.cartocdn.com; "
+        "media-src 'self' blob:; "
+        "connect-src 'self' https://api.elevenlabs.io; "
+        "font-src 'self' https://fonts.gstatic.com;"
+    )
+    return resp
 
 
 # ── ElevenLabs TTS ────────────────────────────────────────────────────────────
@@ -253,7 +294,8 @@ class AuthResp(BaseModel):
 
 
 @app.post("/auth/register", response_model=AuthResp)
-async def register(req: AuthReq) -> AuthResp:
+@limiter.limit("5/minute")
+async def register(request: Request, req: AuthReq) -> AuthResp:
     if len(req.username) < 2 or len(req.password) < 4:
         raise HTTPException(status_code=400, detail="Username ≥2 chars, password ≥4 chars.")
     if await database.get_user(req.username):
@@ -268,7 +310,8 @@ async def register(req: AuthReq) -> AuthResp:
 
 
 @app.post("/auth/login", response_model=AuthResp)
-async def login(req: AuthReq) -> AuthResp:
+@limiter.limit("5/minute")
+async def login(request: Request, req: AuthReq) -> AuthResp:
     user = await database.get_user(req.username)
     if not user or not auth.verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
@@ -426,7 +469,9 @@ class InvestigateResp(BaseModel):
 
 # TODO: replace stub with real SeeingEye FlowExecutor once integrated
 @app.post("/investigate", response_model=InvestigateResp)
+@limiter.limit("30/minute")
 async def investigate(
+    request: Request,
     req: InvestigateReq,
     current_user: Optional[dict] = Depends(auth.optional_user),
 ) -> InvestigateResp:
@@ -474,7 +519,9 @@ class ChangeResp(BaseModel):
 
 # TODO: replace stub with real multi-image VLM call once integrated
 @app.post("/analyze-change", response_model=ChangeResp)
+@limiter.limit("30/minute")
 async def analyze_change(
+    request: Request,
     req: ChangeReq,
     current_user: Optional[dict] = Depends(auth.optional_user),
 ) -> ChangeResp:
@@ -528,7 +575,9 @@ class ChatResp(BaseModel):
 # TODO: replace stub_response with real model call once SeeingEye is integrated;
 #       pass `context` as system/prefix to give the model memory of past events.
 @app.post("/chat", response_model=ChatResp)
+@limiter.limit("30/minute")
 async def chat(
+    request: Request,
     req: ChatReq,
     current_user: Optional[dict] = Depends(auth.optional_user),
 ) -> ChatResp:
@@ -633,7 +682,9 @@ class SafeModeResp(BaseModel):
 #       pass `context` + `recent_frames` so the model knows recent history and
 #       what the user has been seeing before asking for help.
 @app.post("/safe-mode", response_model=SafeModeResp)
+@limiter.limit("30/minute")
 async def safe_mode(
+    request: Request,
     req: SafeModeReq,
     current_user: Optional[dict] = Depends(auth.optional_user),
 ) -> SafeModeResp:

@@ -9,7 +9,14 @@ import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-_SECRET = os.environ.get("JWT_SECRET", "aeyes-dev-secret-change-in-prod")
+_DEV_DEFAULT = "aeyes-dev-secret-change-in-prod"
+_ENV = os.environ.get("AEYES_ENV", "dev")
+_SECRET = os.environ.get("JWT_SECRET", _DEV_DEFAULT)
+if _ENV == "prod" and not os.environ.get("AEYES_SKIP_SECRET_CHECK"):
+    if not _SECRET or _SECRET == _DEV_DEFAULT:
+        raise RuntimeError(
+            "JWT_SECRET must be set to a non-default value when AEYES_ENV=prod"
+        )
 _ALGO = "HS256"
 _EXPIRY_HOURS = 24
 

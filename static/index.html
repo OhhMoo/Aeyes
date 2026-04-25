@@ -2,46 +2,57 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0c0d10" />
   <title>Aeyes — auto scene narration</title>
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg" />
+  <link rel="apple-touch-icon" href="/static/icons/icon.svg" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&display=swap" />
   <link rel="stylesheet" href="/static/style.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
 
+  <a href="#right-app" class="skip-link">Skip to main content</a>
+
   <!-- Splash screen -->
-  <div id="splash-screen">
+  <div id="splash-screen" aria-hidden="true">
     <h1 class="splash-logo">Aeyes</h1>
     <p class="splash-sub">A camera that narrates what you can't see.</p>
   </div>
 
   <!-- Auth overlay -->
-  <div id="auth-overlay">
+  <div id="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-heading">
     <div id="auth-card">
-      <h2>Aeyes</h2>
+      <h2 id="auth-heading">Aeyes</h2>
       <p class="auth-tagline">Sign in to track your history.</p>
-      <div id="auth-tabs">
-        <button class="auth-tab active" data-tab="login">Login</button>
-        <button class="auth-tab" data-tab="register">Register</button>
+      <div id="auth-tabs" role="tablist" aria-label="Sign in or register">
+        <button class="auth-tab active" data-tab="login" role="tab" aria-selected="true" id="auth-tab-login" aria-controls="auth-form">Login</button>
+        <button class="auth-tab" data-tab="register" role="tab" aria-selected="false" id="auth-tab-register" aria-controls="auth-form">Register</button>
       </div>
       <form id="auth-form" autocomplete="on">
         <input id="auth-username" type="text"     placeholder="Username" autocomplete="username"          required />
         <input id="auth-password" type="password" placeholder="Password" autocomplete="current-password" required />
         <button id="auth-submit" type="submit" class="primary">Login</button>
       </form>
-      <p id="auth-error" class="auth-error" hidden></p>
+      <p id="auth-error" class="auth-error" role="alert" hidden></p>
     </div>
   </div>
 
   <!-- Fixed corner user menu -->
   <div id="user-menu-wrap" hidden>
-    <button id="user-menu-btn" class="corner-btn" aria-label="User menu">
-      <span id="corner-avatar">?</span>
+    <button id="user-menu-btn" class="corner-btn" aria-label="User menu" aria-expanded="false" aria-haspopup="menu" aria-controls="user-dropdown">
+      <span id="corner-avatar" aria-hidden="true">?</span>
     </button>
-    <div id="user-dropdown">
+    <div id="user-dropdown" role="menu" aria-labelledby="user-menu-btn">
       <p id="corner-user-name" class="dropdown-name"></p>
-      <button id="profile-btn">Profile</button>
-      <button id="logout-btn">Logout</button>
+      <button id="profile-btn" role="menuitem">Profile</button>
+      <button id="logout-btn" role="menuitem">Logout</button>
     </div>
   </div>
 
@@ -53,19 +64,19 @@
         <header>
           <h1>Aeyes</h1>
           <p class="tagline">A camera that narrates what you can't see.</p>
-          <div id="left-tabs">
-            <button id="tab-camera" class="left-tab active">Camera</button>
-            <button id="tab-map"    class="left-tab">Map</button>
+          <div id="left-tabs" role="tablist" aria-label="View">
+            <button id="tab-camera" class="left-tab active" role="tab" aria-selected="true" aria-controls="camera-section" tabindex="0">Camera</button>
+            <button id="tab-map"    class="left-tab"        role="tab" aria-selected="false" aria-controls="map-section"    tabindex="-1">Map</button>
           </div>
         </header>
 
-        <div id="camera-section">
-          <video id="camera" autoplay muted playsinline></video>
+        <div id="camera-section" role="tabpanel" aria-labelledby="tab-camera">
+          <video id="camera" autoplay muted playsinline aria-label="Live camera preview"></video>
           <canvas id="capture-canvas" hidden></canvas>
-          <img id="last-frame" alt="last captured frame" hidden />
+          <img id="last-frame" alt="" hidden />
         </div>
 
-<div id="map-section" hidden>
+        <div id="map-section" role="tabpanel" aria-labelledby="tab-map" hidden>
           <div id="map"></div>
         </div>
 
@@ -79,25 +90,25 @@
 
         <!-- App panel -->
         <div id="right-app">
-          <section id="status-card" aria-live="polite" aria-atomic="true">
-            <p class="status-label">Status</p>
-            <p id="status-text" class="status-text">Initializing…</p>
-            <p id="response-text" class="response-text" hidden></p>
+          <section id="status-card" aria-labelledby="status-label">
+            <p class="status-label" id="status-label">Status</p>
+            <p id="status-text" class="status-text" role="status" aria-live="polite" aria-atomic="true">Initializing…</p>
+            <p id="response-text" class="response-text" role="status" aria-live="polite" aria-atomic="true" hidden></p>
             <p id="latency-chip" class="latency-chip" hidden></p>
           </section>
 
-          <section id="controls">
-            <button id="auto-btn" class="primary" disabled>Start auto-capture</button>
+          <section id="controls" aria-label="Capture controls">
+            <button id="auto-btn" class="primary" aria-pressed="false" disabled>Start auto-capture</button>
             <button id="describe-btn" disabled>Describe surroundings</button>
             <button id="change-btn" disabled>What changed?</button>
-            <button id="safe-mode-btn" disabled>Safe mode</button>
+            <button id="safe-mode-btn" aria-pressed="false" disabled>Safe mode</button>
           </section>
 
-          <section id="voice-chat-card">
-            <p class="status-label">Voice chat</p>
-            <button id="voice-btn" class="primary">Hold to speak</button>
-            <p id="voice-transcript" class="transcript-text" hidden></p>
-            <p id="voice-response" class="response-text" hidden></p>
+          <section id="voice-chat-card" aria-labelledby="voice-label">
+            <p class="status-label" id="voice-label">Voice chat</p>
+            <button id="voice-btn" class="primary" aria-pressed="false" aria-label="Hold to speak">Hold to speak</button>
+            <p id="voice-transcript" class="transcript-text" role="status" aria-live="polite" hidden></p>
+            <p id="voice-response" class="response-text" role="status" aria-live="polite" hidden></p>
           </section>
 
           <details id="history-panel" open>

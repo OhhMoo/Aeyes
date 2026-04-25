@@ -1,0 +1,19 @@
+{
+  "name": "Aeyes — auto scene narration",
+  "short_name": "Aeyes",
+  "description": "A camera that narrates what you can't see.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0d10",
+  "theme_color": "#0c0d10",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
