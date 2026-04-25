@@ -95,6 +95,18 @@
 
           <details id="history-panel" open>
             <summary>History</summary>
+            <div id="place-suggest" class="place-suggest" hidden>
+              <p class="place-suggest-text">
+                You've been here a few times.
+                <span id="place-suggest-count"></span>
+                Name this place?
+              </p>
+              <form id="place-suggest-form" class="inline-form">
+                <input id="place-suggest-name" type="text" placeholder='e.g. "Home"' autocomplete="off" />
+                <button type="submit" class="primary">Save</button>
+                <button type="button" id="place-suggest-dismiss" class="back-btn">Not now</button>
+              </form>
+            </div>
             <div id="history-filter-bar">
               <select id="history-location-filter">
                 <option value="">All locations</option>
