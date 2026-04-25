@@ -23,6 +23,12 @@ const AUTO_CAPTURE_MS = 5_000;
 const CLIP_WINDOW_MS = 10_000;
 const CLIP_FPS = 1;
 
+// Perceptual-hash threshold for the auto-capture change gate. Scale is the
+// mean absolute brightness difference per pixel between two 16×16 thumbnails
+// (0–255). ~3 corresponds to "no perceptible change", ~10+ corresponds to
+// "an object moved or appeared". Tune lower for chatty, higher for terse.
+const CHANGE_THRESHOLD = 8;
+
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status-text");
 const responseEl = $("response-text");
@@ -40,6 +46,13 @@ const voiceResponseEl = $("voice-response");
 let busy = false;
 let clipBuffer = null;
 let autoCaptureTimer = null;
+let lastNarrationHash = null; // 16×16 grayscale thumbnail of the last frame we spoke about
+let firstAutoTick = true;     // first tick of an auto-capture run uses /investigate to seed the baseline
+
+// Reusable 16×16 canvas for the perceptual hash — avoids allocating per tick.
+const HASH_CANVAS = document.createElement("canvas");
+HASH_CANVAS.width = 16;
+HASH_CANVAS.height = 16;
 
 // ---------------- TTS ----------------
 function speak(text, opts = {}) {
@@ -114,6 +127,27 @@ function pruneClipCache() {
   const last = clipBuffer.latest();
   clipBuffer.frames.length = 0;
   if (last) clipBuffer.frames.push(last);
+}
+
+// 16×16 grayscale thumbnail of the live camera frame. Returns a Uint8Array
+// of 256 brightness values, or null if the camera isn't ready.
+function frameHash() {
+  if (cameraEl.readyState < 2) return null;
+  const ctx = HASH_CANVAS.getContext("2d");
+  ctx.drawImage(cameraEl, 0, 0, 16, 16);
+  const data = ctx.getImageData(0, 0, 16, 16).data;
+  const out = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    out[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
+  }
+  return out;
+}
+
+// Mean absolute difference between two 256-byte hashes. Range 0–255.
+function hashDiff(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
 }
 
 // ---------------- Trigger handlers ----------------
@@ -217,24 +251,60 @@ async function runChangeAnalysis() {
 }
 
 // ---------------- Auto-capture loop ----------------
+//
+// Each tick perceptually hashes the live frame and only narrates when the
+// scene has changed enough vs. the last frame we spoke about. The first tick
+// of a run always narrates (gives the user a baseline description). Subsequent
+// ticks route through /analyze-change so the model describes *what changed*
+// rather than re-describing the whole scene.
+function autoCaptureTick() {
+  if (busy) return;
+  const h = frameHash();
+  if (!h) return;
+
+  if (firstAutoTick || lastNarrationHash === null) {
+    firstAutoTick = false;
+    lastNarrationHash = h;
+    runInvestigation("_describe");
+    return;
+  }
+
+  const diff = hashDiff(lastNarrationHash, h);
+  if (diff < CHANGE_THRESHOLD) {
+    // Scene hasn't changed enough to be worth narrating. Stay silent.
+    return;
+  }
+
+  lastNarrationHash = h;
+  // Prefer /analyze-change for a "what changed" framing. Fall back to
+  // /investigate if the rolling buffer doesn't yet have two frames (rare —
+  // happens only right after a prune).
+  if (clipBuffer && clipBuffer.length() >= 2) {
+    runChangeAnalysis();
+  } else {
+    runInvestigation("_describe");
+  }
+}
+
 function startAutoCapture() {
   if (autoCaptureTimer !== null) return;
-  autoCaptureTimer = setInterval(() => {
-    if (busy) return; // skip ticks that overlap an in-flight request
-    runInvestigation("_describe");
-  }, AUTO_CAPTURE_MS);
+  firstAutoTick = true;
+  lastNarrationHash = null;
+  autoCaptureTimer = setInterval(autoCaptureTick, AUTO_CAPTURE_MS);
   setStatus("Auto-capturing.", "listening");
   autoBtn.textContent = "Stop auto-capture";
   autoBtn.dataset.state = "running";
   speak("Auto capture started.");
   // Fire one immediately so the user gets feedback in <5 s.
-  runInvestigation("_describe");
+  autoCaptureTick();
 }
 
 function stopAutoCapture() {
   if (autoCaptureTimer === null) return;
   clearInterval(autoCaptureTimer);
   autoCaptureTimer = null;
+  lastNarrationHash = null;
+  firstAutoTick = true;
   setStatus("Ready.");
   autoBtn.textContent = "Start auto-capture";
   delete autoBtn.dataset.state;

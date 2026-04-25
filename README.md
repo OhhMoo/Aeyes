@@ -41,9 +41,14 @@ auth.js   ──login/register──→  /auth/login, /auth/register  ──→ 
 camera → ClipBuffer  ─10 s rolling window of JPEGs                     │
               │       (sampled at 1 fps, sample()-on-demand)           │
               ▼                                                        │
-   5 s timer → /investigate {event=_describe, image_b64}  ─────→  stub describe
-   "What changed?" → /analyze-change {frame0, frame1}     ─────→  stub diff
-   "Hold to speak" → /chat {text}                         ─────→  stub + ElevenLabs MP3
+   5 s timer → 16×16 perceptual hash → diff vs last narration          │
+                  │                                                    │
+                  ├─ below CHANGE_THRESHOLD → stay silent               │
+                  │                                                    │
+                  └─ above → /analyze-change {prev, current}     ─→  stub diff
+                              (first tick: /investigate _describe)─→  stub describe
+   "What changed?" → /analyze-change {frame0, frame1}        ─────→  stub diff
+   "Hold to speak" → /chat {text}                            ─────→  stub + ElevenLabs MP3
               │                                                        │
               │   each successful request appends to                   ▼
               │   ─────────────────────────────────────────→  SQLite (history)
@@ -181,8 +186,14 @@ temperature = 0.2
 
 ## Knobs to tune
 
-- `AUTO_CAPTURE_MS` (frontend, `app.js`): interval between automatic captures.
-  Default 5 s. Raise to reduce TTS spam in slow-changing scenes.
+- `AUTO_CAPTURE_MS` (frontend, `app.js`): interval between automatic
+  capture ticks. Default 5 s. Raise for less aggressive polling.
+- `CHANGE_THRESHOLD` (frontend, `app.js`): mean absolute brightness diff
+  (0–255 scale) between consecutive 16×16 frame thumbnails required for the
+  auto-capture loop to narrate. Below this, the tick stays silent and no
+  request is sent. Default 8. Lower for chattier narration, higher for
+  terser. Static scenes typically diff at 1–3; an object moving usually
+  diffs 10+.
 - `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length
   and sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps.
 - `STUB_RESPONSES` (backend, `server.py`, **stub mode**): canned reply per
@@ -217,10 +228,12 @@ temperature = 0.2
 
 - Chrome recommended. `SpeechRecognition` (used for voice chat) is
   Chromium-only; the rest works in any modern browser.
-- TTS spam in stub mode: every 5 s the same canned `/investigate` reply is
-  spoken. Raise `AUTO_CAPTURE_MS` or stop the loop while iterating. A planned
-  improvement is to gate auto-capture on `/analyze-change` first and only
-  narrate when something materially differs.
+- Auto-capture narration is gated by a client-side perceptual hash
+  (`CHANGE_THRESHOLD`). Static scenes are silent — including in stub mode,
+  where the canned reply only fires when the scene actually changes. The
+  first tick of every auto-capture run still fires a baseline `/investigate`
+  so the user gets an initial description; subsequent ticks route through
+  `/analyze-change` for a "what changed" framing.
 - Auth lives entirely in `localStorage` on the client; logging out clears
   it. The JWT `_SECRET` defaults to a dev value — set `JWT_SECRET` for any
   shared deployment.
