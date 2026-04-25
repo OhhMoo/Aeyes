@@ -27,8 +27,10 @@ from __future__ import annotations
 import base64
 import math
 import os
+import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -131,27 +133,107 @@ async def _resolve_location(
 
 def _build_context(history: list[dict]) -> str:
     """
-    Format recent history into a prompt context string. When the real model
-    is integrated, inject this before the user's query so the model has
-    memory of past observations *and where they happened* (location_name is
-    appended when present). The model's output is always a visual description
-    (audio-event triggering was removed), so "Saw" is the correct verb
-    regardless of the original event field.
+    Format recent history into a prompt context string, grouped by location so
+    the model can naturally answer location-scoped queries like "what's the
+    state of my kitchen?". When the real model is integrated, inject this
+    before the user's query so it has memory of past observations *and where
+    they happened*. The model's output is always a visual description (audio-
+    event triggering was removed), so "Saw" is the correct verb regardless of
+    the original event field.
     """
     if not history:
         return ""
+
+    grouped: dict[Optional[str], list[dict]] = {}
+    for h in history[-12:]:
+        grouped.setdefault(h.get("location_name"), []).append(h)
+
     lines = ["Recent observations (for context):"]
-    for h in history[-8:]:
-        ts = h["created_at"][:16].replace("T", " ")
-        snippet = h["response"][:100].rstrip(".")
-        loc_str = f" at {h['location_name']}" if h.get("location_name") else ""
-        if h["type"] == "chat":
-            lines.append(f'  [{ts}]{loc_str} User asked: "{h["input_text"]}" → "{snippet}…"')
-        elif h["type"] == "investigate":
-            lines.append(f'  [{ts}]{loc_str} Saw: "{snippet}…"')
-        elif h["type"] == "change":
-            lines.append(f'  [{ts}]{loc_str} Scene changed: "{snippet}…"')
+    # Render groups with named locations first, then untagged rows.
+    keys = sorted(grouped.keys(), key=lambda k: (k is None, k or ""))
+    for loc in keys:
+        lines.append(f"  At {loc}:" if loc else "  Untagged location:")
+        for h in grouped[loc]:
+            ts = h["created_at"][:16].replace("T", " ")
+            snippet = h["response"][:100].rstrip(".")
+            if h["type"] == "chat":
+                lines.append(f'    [{ts}] User asked: "{h["input_text"]}" → "{snippet}…"')
+            elif h["type"] == "investigate":
+                lines.append(f'    [{ts}] Saw: "{snippet}…"')
+            elif h["type"] == "change":
+                lines.append(f'    [{ts}] Scene changed: "{snippet}…"')
     return "\n".join(lines)
+
+
+# ── Spatial-query stubs ───────────────────────────────────────────────────────
+# In stub mode we do tiny pattern-matching so the demo can actually answer
+# "where did I last see X" / "what's at the kitchen" without an LLM. The real
+# model takes over once SeeingEye is wired in; these routes are best-effort
+# fallbacks that produce something useful in the meantime.
+
+# Matches: "where did I see/leave/put X", "where is X", "where are X",
+# "where can I find X", "where's X". Captures whatever follows.
+_WHERE_RE = re.compile(
+    r"\bwhere(?:'s|\s+is|\s+are|\s+can\s+i\s+find|\s+did\s+i\s+(?:see|last\s+see|put|leave|find))\s+"
+    r"(?:my\s+|the\s+|a\s+|an\s+|some\s+)?(.+?)\??\s*$",
+    re.IGNORECASE,
+)
+
+
+def _match_object_query(text: str) -> Optional[str]:
+    """If `text` looks like a 'where did I see X' question, return X. Else None."""
+    m = _WHERE_RE.search(text.strip())
+    if not m:
+        return None
+    obj = m.group(1).strip().lower().rstrip("?.,!")
+    return obj or None
+
+
+def _find_object_in_history(history: list[dict], object_name: str) -> Optional[dict]:
+    """Most recent history row whose response mentions `object_name`. Else None."""
+    needle = object_name.lower()
+    for h in reversed(history):
+        if needle in (h.get("response") or "").lower():
+            return h
+    return None
+
+
+def _match_location_query(text: str, locations: list[dict]) -> Optional[dict]:
+    """If text mentions a saved location name, return that location dict."""
+    txt = text.lower()
+    # Prefer the longest matching name so "main kitchen" beats "kitchen".
+    best = None
+    for loc in locations:
+        name = loc["name"].lower()
+        if name and name in txt and (best is None or len(name) > len(best["name"])):
+            best = loc
+    return best
+
+
+def _summarize_at_location(history: list[dict], loc: dict) -> str:
+    rows = [h for h in history if h.get("location_id") == loc["id"]]
+    if not rows:
+        return f"No observations recorded at {loc['name']} yet."
+    last = rows[-1]
+    snippet = (last.get("response") or "")[:120].rstrip(".")
+    n = len(rows)
+    return (
+        f"At {loc['name']}, {n} observation{'s' if n != 1 else ''} on file. "
+        f'Most recent: "{snippet}…"'
+    )
+
+
+def _relative_time(iso: str) -> str:
+    try:
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except Exception:
+        return iso[:16].replace("T", " ")
+    delta = datetime.now(timezone.utc) - when
+    s = int(delta.total_seconds())
+    if s < 60:    return f"{s}s ago"
+    if s < 3600:  return f"{s // 60}m ago"
+    if s < 86400: return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -426,11 +508,18 @@ class ChatReq(BaseModel):
     lon: Optional[float] = None
 
 
+class LocationRef(BaseModel):
+    name: Optional[str] = None
+    lat: float
+    lon: float
+
+
 class ChatResp(BaseModel):
     text: str
     response: str
     audio_b64: Optional[str]
     success: bool
+    referenced_location: Optional[LocationRef] = None
 
 
 # TODO: replace stub_response with real model call once SeeingEye is integrated;
@@ -441,20 +530,60 @@ async def chat(
     current_user: Optional[dict] = Depends(auth.optional_user),
 ) -> ChatResp:
     history = await database.get_history(current_user["id"]) if current_user else []
+    locations = await database.get_locations(current_user["id"]) if current_user else []
     context = _build_context(history)  # inject into real model prompt when integrated
 
-    if history:
-        stub_response = (
-            f'You asked: "{req.text}". '
-            f"I have {len(history)} past observation{'s' if len(history) != 1 else ''} on file. "
-            "The AI model is not yet connected — this is a stub response."
-        )
+    referenced: Optional[LocationRef] = None
+    stub_response: str
+
+    # Feature 1: "where did I (last) see X?" — find an object across history
+    # and surface where it was last observed, plus a map pin for the client
+    # to highlight.
+    obj = _match_object_query(req.text)
+    if obj and history:
+        match = _find_object_in_history(history, obj)
+        if match:
+            loc_str = f" at {match['location_name']}" if match.get("location_name") else ""
+            when = _relative_time(match["created_at"])
+            snippet = (match.get("response") or "")[:120].rstrip(".")
+            stub_response = (
+                f'You last saw something matching "{obj}"{loc_str} {when}: "{snippet}…" '
+                "(Stub response — real model coming soon.)"
+            )
+            if match.get("lat") is not None and match.get("lon") is not None:
+                referenced = LocationRef(
+                    name=match.get("location_name"),
+                    lat=match["lat"],
+                    lon=match["lon"],
+                )
+        else:
+            stub_response = (
+                f'I don\'t have any past observations matching "{obj}". '
+                "(Stub: real model coming soon.)"
+            )
     else:
-        stub_response = (
-            f'You asked: "{req.text}". '
-            "No previous history yet. "
-            "The AI model is not yet connected — this is a stub response."
-        )
+        # Feature 3: "what's at <location>?" / "state of <location>?" — match
+        # against the user's saved locations and return a per-location summary.
+        loc_match = _match_location_query(req.text, locations) if locations else None
+        if loc_match:
+            stub_response = _summarize_at_location(history, loc_match)
+            referenced = LocationRef(
+                name=loc_match["name"],
+                lat=loc_match["lat"],
+                lon=loc_match["lon"],
+            )
+        elif history:
+            stub_response = (
+                f'You asked: "{req.text}". '
+                f"I have {len(history)} past observation{'s' if len(history) != 1 else ''} on file. "
+                "The AI model is not yet connected — this is a stub response."
+            )
+        else:
+            stub_response = (
+                f'You asked: "{req.text}". '
+                "No previous history yet. "
+                "The AI model is not yet connected — this is a stub response."
+            )
 
     audio_b64 = await _elevenlabs_tts(stub_response)
 
@@ -476,6 +605,7 @@ async def chat(
         response=stub_response,
         audio_b64=audio_b64,
         success=True,
+        referenced_location=referenced,
     )
 
 

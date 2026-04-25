@@ -475,6 +475,13 @@ async function runChat(text) {
     } else {
       speak(data.response, { cancel: false });
     }
+    // Spatial-memory: when /chat answers a "where did I see X" or
+    // "what's at <location>" query, the response carries a referenced
+    // location — switch to the map tab and pulse a pin there.
+    if (data.referenced_location) {
+      const r = data.referenced_location;
+      window.flashLocation?.(r.lat, r.lon, r.name);
+    }
     window.refreshHistory?.();
   } catch (e) {
     voiceResponseEl.textContent = "Network error.";
