@@ -23,12 +23,6 @@ const AUTO_CAPTURE_MS = 5_000;
 const CLIP_WINDOW_MS = 10_000;
 const CLIP_FPS = 1;
 
-// Perceptual-hash threshold for the auto-capture change gate. Scale is the
-// mean absolute brightness difference per pixel between two 16×16 thumbnails
-// (0–255). ~3 corresponds to "no perceptible change", ~10+ corresponds to
-// "an object moved or appeared". Tune lower for chatty, higher for terse.
-const CHANGE_THRESHOLD = 8;
-
 // "Recent captures" sub-window — keeps thumbnails of every frame the model
 // actually saw, then auto-evicts once they cross CAPTURE_TTL_MS. The rolling
 // ClipBuffer is still pruned aggressively after each request; this panel is
@@ -43,6 +37,7 @@ const latencyChipEl = $("latency-chip");
 const autoBtn = $("auto-btn");
 const describeBtn = $("describe-btn");
 const changeBtn = $("change-btn");
+const safeModeBtn = $("safe-mode-btn");
 const cameraEl = $("camera");
 const captureCanvas = $("capture-canvas");
 const lastFrameImg = $("last-frame");
@@ -54,16 +49,15 @@ const capturedCountEl = $("captured-count");
 
 const capturedFrames = []; // {ts, dataUrl, eventLabel} — newest first
 
+const SAFE_MODE_PHRASES = [
+  "tell me what to do", "guide me", "help me", "what should i do",
+  "safe mode", "assist me", "i need help", "i need guidance",
+];
+
 let busy = false;
 let clipBuffer = null;
 let autoCaptureTimer = null;
-let lastNarrationHash = null; // 16×16 grayscale thumbnail of the last frame we spoke about
-let firstAutoTick = true;     // first tick of an auto-capture run uses /investigate to seed the baseline
-
-// Reusable 16×16 canvas for the perceptual hash — avoids allocating per tick.
-const HASH_CANVAS = document.createElement("canvas");
-HASH_CANVAS.width = 16;
-HASH_CANVAS.height = 16;
+let safeModeActive = false;
 
 // ---------------- TTS ----------------
 function speak(text, opts = {}) {
@@ -174,7 +168,7 @@ setInterval(() => {
 // ---------------- Camera + frame buffer ----------------
 async function initCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480, facingMode: "environment" },
+    video: { width: 640, height: 480 },
     audio: false,
   });
   cameraEl.srcObject = stream;
@@ -199,11 +193,7 @@ function captureFrameDataUrl() {
 function showLastFrame(dataUrl) {
   lastFrameImg.src = dataUrl;
   lastFrameImg.hidden = false;
-  cameraEl.style.display = "none";
-  setTimeout(() => {
-    cameraEl.style.display = "";
-    lastFrameImg.hidden = true;
-  }, 8000);
+  setTimeout(() => { lastFrameImg.hidden = true; }, 5000);
 }
 
 // Drop everything except the most recent frame, so the rolling window doesn't
@@ -214,27 +204,6 @@ function pruneClipCache() {
   const last = clipBuffer.latest();
   clipBuffer.frames.length = 0;
   if (last) clipBuffer.frames.push(last);
-}
-
-// 16×16 grayscale thumbnail of the live camera frame. Returns a Uint8Array
-// of 256 brightness values, or null if the camera isn't ready.
-function frameHash() {
-  if (cameraEl.readyState < 2) return null;
-  const ctx = HASH_CANVAS.getContext("2d");
-  ctx.drawImage(cameraEl, 0, 0, 16, 16);
-  const data = ctx.getImageData(0, 0, 16, 16).data;
-  const out = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) {
-    out[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
-  }
-  return out;
-}
-
-// Mean absolute difference between two 256-byte hashes. Range 0–255.
-function hashDiff(a, b) {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
-  return sum / a.length;
 }
 
 // ---------------- Geolocation ----------------
@@ -250,7 +219,7 @@ async function getCurrentCoords() {
 }
 
 // ---------------- Trigger handlers ----------------
-async function runInvestigation(eventKey) {
+async function runInvestigation(eventKey, { showFrame = true } = {}) {
   if (busy) return;
   if (cameraEl.readyState < 2) {
     setStatus("Camera not ready", "error");
@@ -261,7 +230,7 @@ async function runInvestigation(eventKey) {
   showLatency(null);
 
   setStatus("Investigating…", "investigating");
-  const [triggerFrame, coords] = await Promise.all([
+  let [triggerFrame, coords] = await Promise.all([
     Promise.resolve(clipBuffer.captureNow()),
     getCurrentCoords(),
   ]);
@@ -270,7 +239,7 @@ async function runInvestigation(eventKey) {
     busy = false;
     return;
   }
-  showLastFrame(triggerFrame.dataUrl);
+  if (showFrame) showLastFrame(triggerFrame.dataUrl);
 
   const tStart = performance.now();
   try {
@@ -287,7 +256,8 @@ async function runInvestigation(eventKey) {
       showResponse(data.response || "");
       speak("Something went wrong with the investigation.");
     } else {
-      setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
+      setStatus(safeModeActive ? "Safe mode." : autoCaptureTimer ? "Auto-capturing." : "Ready.",
+                safeModeActive || autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
       recordCapture(eventKey, triggerFrame.dataUrl);
@@ -299,13 +269,13 @@ async function runInvestigation(eventKey) {
     speak("Network error.");
     console.error(e);
   } finally {
-    triggerFrame = null; // release the trigger frame's data URL
+    triggerFrame = null;
     pruneClipCache();
     busy = false;
   }
 }
 
-async function runChangeAnalysis() {
+async function runChangeAnalysis({ showFrame = true } = {}) {
   if (busy) return;
   if (!clipBuffer || clipBuffer.length() < 2) {
     speak("Not enough video history yet. Wait a few more seconds.");
@@ -318,7 +288,7 @@ async function runChangeAnalysis() {
   showLatency(null);
 
   let [oldest, newest] = clipBuffer.sample("edges");
-  showLastFrame(newest.dataUrl);
+  if (showFrame) showLastFrame(newest.dataUrl);
   const coords = await getCurrentCoords();
 
   const tStart = performance.now();
@@ -336,7 +306,8 @@ async function runChangeAnalysis() {
       showResponse(data.response || "");
       speak("Could not compare the scene.");
     } else {
-      setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
+      setStatus(safeModeActive ? "Safe mode." : autoCaptureTimer ? "Auto-capturing." : "Ready.",
+                safeModeActive || autoCaptureTimer ? "listening" : null);
       showResponse(data.response);
       showLatency(elapsed);
       recordCapture("_change", newest.dataUrl);
@@ -357,63 +328,100 @@ async function runChangeAnalysis() {
 
 // ---------------- Auto-capture loop ----------------
 //
-// Each tick perceptually hashes the live frame and only narrates when the
-// scene has changed enough vs. the last frame we spoke about. The first tick
-// of a run always narrates (gives the user a baseline description). Subsequent
-// ticks route through /analyze-change so the model describes *what changed*
-// rather than re-describing the whole scene.
 function autoCaptureTick() {
   if (busy) return;
-  const h = frameHash();
-  if (!h) return;
-
-  if (firstAutoTick || lastNarrationHash === null) {
-    firstAutoTick = false;
-    lastNarrationHash = h;
-    runInvestigation("_describe");
-    return;
-  }
-
-  const diff = hashDiff(lastNarrationHash, h);
-  if (diff < CHANGE_THRESHOLD) {
-    // Scene hasn't changed enough to be worth narrating. Stay silent.
-    return;
-  }
-
-  lastNarrationHash = h;
-  // Prefer /analyze-change for a "what changed" framing. Fall back to
-  // /investigate if the rolling buffer doesn't yet have two frames (rare —
-  // happens only right after a prune).
   if (clipBuffer && clipBuffer.length() >= 2) {
-    runChangeAnalysis();
+    runChangeAnalysis({ showFrame: false });
   } else {
-    runInvestigation("_describe");
+    runInvestigation("_describe", { showFrame: false });
   }
 }
 
 function startAutoCapture({ silent = false } = {}) {
   if (autoCaptureTimer !== null) return;
-  firstAutoTick = true;
-  lastNarrationHash = null;
   autoCaptureTimer = setInterval(autoCaptureTick, AUTO_CAPTURE_MS);
   setStatus("Auto-capturing.", "listening");
   autoBtn.textContent = "Stop auto-capture";
   autoBtn.dataset.state = "running";
   if (!silent) speak("Auto capture started.");
-  // Fire one immediately so the user gets feedback in <5 s.
-  autoCaptureTick();
 }
 
-function stopAutoCapture() {
+function stopAutoCapture({ silent = false } = {}) {
   if (autoCaptureTimer === null) return;
   clearInterval(autoCaptureTimer);
   autoCaptureTimer = null;
-  lastNarrationHash = null;
-  firstAutoTick = true;
-  setStatus("Ready.");
+  if (!silent) setStatus("Ready.");
   autoBtn.textContent = "Start auto-capture";
   delete autoBtn.dataset.state;
-  speak("Auto capture stopped.");
+  if (!silent) speak("Auto capture stopped.");
+}
+
+// ---------------- Safe mode ----------------
+function isSafeModePhrase(text) {
+  const lower = text.toLowerCase();
+  return SAFE_MODE_PHRASES.some((p) => lower.includes(p));
+}
+
+function startSafeMode() {
+  if (safeModeActive) return;
+  safeModeActive = true;
+  document.body.classList.add("safe-mode-active");
+  setStatus("Safe mode.", "listening");
+  if (safeModeBtn) { safeModeBtn.textContent = "Stop safe mode"; safeModeBtn.dataset.state = "safe"; }
+}
+
+function stopSafeMode() {
+  if (!safeModeActive) return;
+  safeModeActive = false;
+  document.body.classList.remove("safe-mode-active");
+  setStatus(autoCaptureTimer ? "Auto-capturing." : "Ready.", autoCaptureTimer ? "listening" : null);
+  if (safeModeBtn) { safeModeBtn.textContent = "Safe mode"; delete safeModeBtn.dataset.state; }
+}
+
+async function runSafeMode(triggerText) {
+  if (busy) return;
+  busy = true;
+  showResponse("");
+
+  const recentFrames = capturedFrames.slice(0, 5).map((f) => f.dataUrl);
+  const [currentFrame, coords] = await Promise.all([
+    Promise.resolve(clipBuffer?.captureNow() || null),
+    getCurrentCoords(),
+  ]);
+
+  try {
+    const resp = await fetch("/safe-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...window.getAuthHeaders?.() },
+      body: JSON.stringify({
+        image_b64: currentFrame?.dataUrl || null,
+        recent_frames: recentFrames,
+        text: triggerText || null,
+        ...(coords || {}),
+      }),
+    });
+    const data = await resp.json();
+    voiceResponseEl.textContent = data.response;
+    voiceResponseEl.hidden = false;
+    showResponse(data.response);
+    if (data.audio_b64) {
+      await playAudioB64(data.audio_b64);
+    } else {
+      speak(data.response);
+    }
+    window.refreshHistory?.();
+  } catch (e) {
+    setStatus("Network error.", "error");
+    console.error(e);
+  } finally {
+    if (safeModeBtn && safeModeActive) {
+      safeModeBtn.textContent = "Stop safe mode";
+      safeModeBtn.dataset.state = "safe";
+    }
+    setStatus(safeModeActive ? "Safe mode." : autoCaptureTimer ? "Auto-capturing." : "Ready.",
+              safeModeActive || autoCaptureTimer ? "listening" : null);
+    busy = false;
+  }
 }
 
 // ---------------- Voice chat ----------------
@@ -483,7 +491,15 @@ voiceBtn.addEventListener("mousedown", () => {
 
   recognition.onresult = (ev) => {
     const text = ev.results[0][0].transcript.trim();
-    if (text) runChat(text);
+    if (!text) return;
+    if (isSafeModePhrase(text)) {
+      startSafeMode();
+      runSafeMode(text);
+    } else if (safeModeActive) {
+      runSafeMode(text);
+    } else {
+      runChat(text);
+    }
   };
 
   recognition.onerror = (ev) => {
@@ -509,6 +525,11 @@ autoBtn.addEventListener("click", () => {
   else stopAutoCapture();
 });
 
+safeModeBtn?.addEventListener("click", () => {
+  if (safeModeActive) stopSafeMode();
+  else startSafeMode();
+});
+
 describeBtn.addEventListener("click", () => runInvestigation("_describe"));
 changeBtn.addEventListener("click", () => runChangeAnalysis());
 
@@ -519,6 +540,7 @@ changeBtn.addEventListener("click", () => runChangeAnalysis());
     describeBtn.disabled = false;
     changeBtn.disabled = false;
     autoBtn.disabled = false;
+    if (safeModeBtn) safeModeBtn.disabled = false;
   } catch (e) {
     console.error(e);
     setStatus("Camera permission denied. Reload and grant camera access.", "error");
@@ -540,11 +562,7 @@ changeBtn.addEventListener("click", () => runChangeAnalysis());
   const appView = document.getElementById("app-view");
   if (appView) {
     new MutationObserver(() => {
-      if (
-        !appView.hidden &&
-        autoCaptureTimer === null &&
-        localStorage.getItem("aeyes_token")
-      ) {
+      if (!appView.hidden && autoCaptureTimer === null && localStorage.getItem("aeyes_token")) {
         startAutoCapture({ silent: true });
       }
     }).observe(appView, { attributes: true, attributeFilter: ["hidden"] });

@@ -12,6 +12,7 @@ Endpoints:
   POST /investigate         — audio-event investigation (optional auth → history saved)
   POST /analyze-change      — scene change detection  (optional auth → history saved)
   POST /chat                — voice chat + ElevenLabs TTS (optional auth → history saved)
+  POST /safe-mode           — active guidance mode with recent frames (optional auth → history saved)
   GET  /health              — readiness probe
 
 Env vars:
@@ -146,6 +147,8 @@ def _build_context(history: list[dict]) -> str:
             lines.append(f'  [{ts}]{loc_str} Heard {h["event"]} → "{snippet}…"')
         elif h["type"] == "change":
             lines.append(f'  [{ts}]{loc_str} Scene changed → "{snippet}…"')
+        elif h["type"] == "safe_mode":
+            lines.append(f'  [{ts}]{loc_str} Safe mode → "{snippet}…"')
     return "\n".join(lines)
 
 
@@ -475,6 +478,73 @@ async def chat(
         text=req.text,
         response=stub_response,
         audio_b64=audio_b64,
+        success=True,
+    )
+
+
+# ── Safe-mode endpoint ───────────────────────────────────────────────────────
+
+class SafeModeReq(BaseModel):
+    image_b64: Optional[str] = None
+    recent_frames: Optional[list[str]] = None  # last N captured frames, newest first
+    text: Optional[str] = None                 # voice phrase that triggered it, if any
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
+
+class SafeModeResp(BaseModel):
+    response: str
+    audio_b64: Optional[str]
+    elapsed_seconds: float
+    success: bool
+
+
+# TODO: replace stub with real guidance model once SeeingEye is integrated;
+#       pass `context` + `recent_frames` so the model knows recent history and
+#       what the user has been seeing before asking for help.
+@app.post("/safe-mode", response_model=SafeModeResp)
+async def safe_mode(
+    req: SafeModeReq,
+    current_user: Optional[dict] = Depends(auth.optional_user),
+) -> SafeModeResp:
+    start = time.time()
+    history = await database.get_history(current_user["id"]) if current_user else []
+    context = _build_context(history)  # inject into real model prompt when integrated
+
+    n_frames = len(req.recent_frames) if req.recent_frames else (1 if req.image_b64 else 0)
+    if history:
+        stub_response = (
+            f"Safe mode is active. I have {len(history)} past observation"
+            f"{'s' if len(history) != 1 else ''} and {n_frames} recent frame"
+            f"{'s' if n_frames != 1 else ''} to work with. "
+            "The AI model is not yet connected — this is a stub response."
+        )
+    else:
+        stub_response = (
+            f"Safe mode is active. I can see {n_frames} recent frame"
+            f"{'s' if n_frames != 1 else ''} but have no history yet. "
+            "The AI model is not yet connected — this is a stub response."
+        )
+
+    audio_b64 = await _elevenlabs_tts(stub_response)
+
+    if current_user:
+        loc_id, loc_name = await _resolve_location(current_user["id"], req.lat, req.lon)
+        await database.add_history(
+            user_id=current_user["id"],
+            type="safe_mode",
+            response=stub_response,
+            input_text=req.text,
+            lat=req.lat,
+            lon=req.lon,
+            location_id=loc_id,
+            location_name=loc_name,
+        )
+
+    return SafeModeResp(
+        response=stub_response,
+        audio_b64=audio_b64,
+        elapsed_seconds=round(time.time() - start, 3),
         success=True,
     )
 

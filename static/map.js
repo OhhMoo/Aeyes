@@ -2,10 +2,12 @@
 // Tab switching, lazy map init, current position marker, saved location pins.
 
 (function () {
-  const tabCamera    = document.getElementById("tab-camera");
-  const tabMap       = document.getElementById("tab-map");
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const tabCamera     = document.getElementById("tab-camera");
+  const tabMap        = document.getElementById("tab-map");
   const cameraSection = document.getElementById("camera-section");
-  const mapSection   = document.getElementById("map-section");
+  const mapSection    = document.getElementById("map-section");
 
   let leafletMap     = null;
   let positionMarker = null;
@@ -13,22 +15,61 @@
 
   // ── Custom marker icons ───────────────────────────────────────────────────
 
-  function makeIcon(color, size = 12) {
+  // Inject ping keyframes once into the document head.
+  (function injectPingStyles() {
+    if (document.getElementById("map-ping-style")) return;
+    const s = document.createElement("style");
+    s.id = "map-ping-style";
+    s.textContent = `
+      @keyframes map-ping {
+        0%   { transform: translate(-50%,-50%) scale(1);   opacity: 0.7; }
+        100% { transform: translate(-50%,-50%) scale(3.5); opacity: 0;   }
+      }
+      .map-ping-ring {
+        position: absolute; width: 16px; height: 16px; border-radius: 50%;
+        background: #7cf2c2;
+        top: 50%; left: 50%;
+        transform: translate(-50%,-50%);
+        animation: map-ping 1.8s ease-out infinite;
+      }
+      .map-ping-dot {
+        position: absolute; width: 16px; height: 16px; border-radius: 50%;
+        background: #7cf2c2;
+        border: 2.5px solid rgba(255,255,255,0.85);
+        box-shadow: 0 0 6px #7cf2c255;
+        top: 50%; left: 50%;
+        transform: translate(-50%,-50%);
+      }
+    `;
+    document.head.appendChild(s);
+  })();
+
+  const iconCurrent = L.divIcon({
+    className: "",
+    html: `<div style="position:relative;width:48px;height:48px;">
+             <div class="map-ping-ring"></div>
+             <div class="map-ping-dot"></div>
+           </div>`,
+    iconSize:    [48, 48],
+    iconAnchor:  [24, 24],
+    popupAnchor: [0, -24],
+  });
+
+  function makePinIcon(color, w = 28, h = 40) {
     return L.divIcon({
       className: "",
-      html: `<div style="
-        width:${size}px;height:${size}px;border-radius:50%;
-        background:${color};border:2px solid rgba(255,255,255,0.5);
-        box-shadow:0 0 6px ${color}55;
-      "></div>`,
-      iconSize: [size, size],
-      iconAnchor: [size / 2, size / 2],
-      popupAnchor: [0, -(size / 2 + 4)],
+      html: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 28 40">
+        <path d="M14 0C8.5 0 4 4.7 4 10.5c0 8.2 10 29.5 10 29.5s10-21.3 10-29.5C24 4.7 19.5 0 14 0z"
+              fill="${color}" stroke="rgba(0,0,0,0.25)" stroke-width="1.5"/>
+        <circle cx="14" cy="10.5" r="4.5" fill="white" opacity="0.9"/>
+      </svg>`,
+      iconSize:    [w, h],
+      iconAnchor:  [w / 2, h],
+      popupAnchor: [0, -h],
     });
   }
 
-  const iconCurrent = makeIcon("#7cf2c2", 14); // teal — current position
-  const iconSaved   = makeIcon("#f2c97c", 11); // amber — named locations
+  const iconSaved = makePinIcon("#f2c97c", 28, 40); // amber — named locations
 
   // ── Map initialisation ────────────────────────────────────────────────────
 
@@ -36,7 +77,7 @@
     if (leafletMap) return;
     leafletMap = L.map("map", { zoomControl: true });
     L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
       {
         attribution:
           '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> contributors' +
@@ -113,19 +154,44 @@
 
   // ── Tab switching ─────────────────────────────────────────────────────────
 
-  tabCamera.addEventListener("click", () => {
+  let tabBusy = false;
+
+  async function crossFade(hide, show, afterShow) {
+    hide.style.transition = "opacity 180ms ease";
+    hide.style.opacity = "0";
+    await sleep(180);
+    hide.hidden = true;
+    hide.style.transition = "";
+    hide.style.opacity = "";
+
+    if (afterShow) afterShow();
+
+    show.hidden = false;
+    show.style.opacity = "0";
+    show.style.transition = "opacity 220ms ease";
+    await sleep(16);
+    show.style.opacity = "1";
+    await sleep(220);
+    show.style.transition = "";
+    show.style.opacity = "";
+  }
+
+  tabCamera.addEventListener("click", async () => {
+    if (tabBusy || !cameraSection.hidden) return;
+    tabBusy = true;
     tabCamera.classList.add("active");
     tabMap.classList.remove("active");
-    cameraSection.hidden = false;
-    mapSection.hidden    = true;
+    await crossFade(mapSection, cameraSection);
+    tabBusy = false;
   });
 
-  tabMap.addEventListener("click", () => {
+  tabMap.addEventListener("click", async () => {
+    if (tabBusy || cameraSection.hidden) return;
+    tabBusy = true;
     tabMap.classList.add("active");
     tabCamera.classList.remove("active");
-    cameraSection.hidden = true;
-    mapSection.hidden    = false;
-    refreshMap();
+    await crossFade(cameraSection, mapSection, refreshMap);
+    tabBusy = false;
   });
 
   // expose so auth.js can refresh map pins after a location is saved/deleted

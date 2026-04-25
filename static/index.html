@@ -9,6 +9,12 @@
 </head>
 <body>
 
+  <!-- Splash screen -->
+  <div id="splash-screen">
+    <h1 class="splash-logo">Aeyes</h1>
+    <p class="splash-sub">A camera that narrates what you can't see.</p>
+  </div>
+
   <!-- Auth overlay -->
   <div id="auth-overlay">
     <div id="auth-card">
@@ -59,7 +65,7 @@
           <img id="last-frame" alt="last captured frame" hidden />
         </div>
 
-        <div id="map-section" hidden>
+<div id="map-section" hidden>
           <div id="map"></div>
         </div>
 
@@ -84,6 +90,7 @@
             <button id="auto-btn" class="primary" disabled>Start auto-capture</button>
             <button id="describe-btn" disabled>Describe surroundings</button>
             <button id="change-btn" disabled>What changed?</button>
+            <button id="safe-mode-btn" disabled>Safe mode</button>
           </section>
 
           <section id="voice-chat-card">

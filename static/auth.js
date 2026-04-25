@@ -85,19 +85,39 @@ userMenuBtn.addEventListener("click", (e) => {
 });
 document.addEventListener("click", () => userDropdown.classList.remove("open"));
 
+// ── Splash dismiss ────────────────────────────────────────────────────────────
+let splashGone = false;
+function dismissSplash() {
+  if (splashGone) return;
+  splashGone = true;
+  const splash = document.getElementById("splash-screen");
+  if (!splash) return;
+  // Double-rAF ensures the browser has painted opacity:1 before we animate to 0.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    splash.style.transition = "opacity 550ms ease, transform 550ms ease";
+    splash.style.opacity    = "0";
+    splash.style.transform  = "translateY(-36px)";
+    setTimeout(() => { splash.style.display = "none"; }, 600);
+  }));
+}
+
 // ── Panel swap helpers ────────────────────────────────────────────────────────
 async function fadeOutPanel(el) {
   el.style.opacity = "0";
+  el.style.transform = "translateX(-18px)";
   el.style.pointerEvents = "none";
-  await sleep(200);
+  await sleep(240);
   el.style.display = "none";
+  el.style.transform = "";
 }
 
 async function fadeInPanel(el) {
   el.style.display = "flex";
   el.style.opacity = "0";
-  await sleep(16); // one frame so display change paints first
+  el.style.transform = "translateX(18px)";
+  await sleep(16);
   el.style.opacity = "1";
+  el.style.transform = "translateX(0)";
   el.style.pointerEvents = "auto";
 }
 
@@ -114,6 +134,7 @@ function showApp(displayName) {
   rightApp.style.opacity      = "1";
   rightApp.style.pointerEvents = "auto";
   rightProfile.style.display  = "none";
+  refreshHistory();
 }
 
 function showAuth() {
@@ -415,3 +436,5 @@ if (getToken() && localStorage.getItem(USER_KEY)) {
 } else {
   showAuth();
 }
+// Let the splash animate in for at least 600ms before it exits
+setTimeout(dismissSplash, 600);

@@ -12,6 +12,39 @@
   --col-border: #1e2128;
 }
 
+/* ── Splash screen ─────────────────────────────────────────────────────────── */
+#splash-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  opacity: 1;
+  pointer-events: none;
+}
+.splash-logo {
+  margin: 0;
+  font-size: 72px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: var(--text);
+  animation: splashIn 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.splash-sub {
+  margin: 0;
+  font-size: 15px;
+  color: var(--muted);
+  animation: splashIn 500ms 80ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes splashIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -58,7 +91,7 @@ main { height: 100%; overflow: hidden; }
   display: flex;
   flex-direction: column;
   gap: 16px;
-  transition: opacity 200ms ease;
+  transition: opacity 240ms ease, transform 240ms ease;
   scrollbar-width: thin;
   scrollbar-color: #2c303a transparent;
 }
@@ -67,6 +100,7 @@ main { height: 100%; overflow: hidden; }
 #right-profile {
   opacity: 0;
   pointer-events: none;
+  transform: translateX(22px);
   display: none;
 }
 
@@ -127,6 +161,7 @@ footer .muted, .muted {
   border-radius: var(--radius);
   overflow: hidden;
   background: #000;
+  transition: opacity 200ms ease;
 }
 #camera, #last-frame {
   width: 100%;
@@ -165,6 +200,20 @@ button.primary[data-state="running"] {
   color: #1a1300;
 }
 button.primary[data-state="running"]:hover:not(:disabled) { background: #f5d99a; }
+
+button[data-state="safe"] {
+  background: var(--warn);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+button[data-state="safe"]:hover:not(:disabled) { background: #f59090; }
+
+/* Safe mode: shift accent to red across the whole UI */
+body.safe-mode-active {
+  --accent: #f27c7c;
+  --ring: 0 0 0 2px rgba(242, 124, 124, 0.4);
+}
 
 /* ── Status card ───────────────────────────────────────────────────────────── */
 #status-card {
@@ -341,22 +390,22 @@ details[open] summary { color: var(--text); margin-bottom: 8px; }
 #user-menu-wrap[hidden] { display: none; }
 
 .corner-btn {
-  width: 42px;
-  height: 42px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
-  background: var(--panel);
+  background: #1e2128;
   border: 1px solid #2c303a;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: border-color 150ms, box-shadow 150ms;
+  transition: border-color 150ms, box-shadow 150ms, background 150ms;
 }
 .corner-btn:hover { border-color: var(--accent); box-shadow: var(--ring); }
 
 #corner-avatar {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--accent);
   line-height: 1;
@@ -411,7 +460,7 @@ details[open] summary { color: var(--text); margin-bottom: 8px; }
 }
 #user-dropdown button:hover { background: var(--panel-2); }
 
-/* ── Auth overlay ──────────────────────────────────────────────────────────── */
+/* ── Auth overlay / card ───────────────────────────────────────────────────── */
 #auth-overlay {
   position: fixed;
   inset: 0;
@@ -434,6 +483,11 @@ details[open] summary { color: var(--text); margin-bottom: 8px; }
   display: flex;
   flex-direction: column;
   gap: 18px;
+  animation: cardIn 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 #auth-card h2 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
 .auth-tagline  { margin: -10px 0 0; color: var(--muted); font-size: 14px; }
