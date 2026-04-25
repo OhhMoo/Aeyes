@@ -26,8 +26,10 @@ const CLIP_FPS = 1;
 // Perceptual-hash threshold for the auto-capture change gate. Scale is the
 // mean absolute brightness difference per pixel between two 16×16 thumbnails
 // (0–255). ~3 corresponds to "no perceptible change", ~10+ corresponds to
-// "an object moved or appeared". Tune lower for chatty, higher for terse.
-const CHANGE_THRESHOLD = 8;
+// "an object moved or appeared". `let` (not `const`) so the calibration
+// slider in the UI can adjust it live during stage rehearsal.
+const CHANGE_THRESHOLD_DEFAULT = 8;
+let changeThreshold = CHANGE_THRESHOLD_DEFAULT;
 
 // "Recent captures" sub-window — keeps thumbnails of every frame the model
 // actually saw, then auto-evicts once they cross CAPTURE_TTL_MS. The rolling
@@ -51,6 +53,9 @@ const voiceTranscriptEl = $("voice-transcript");
 const voiceResponseEl = $("voice-response");
 const capturedListEl = $("captured-list");
 const capturedCountEl = $("captured-count");
+const thresholdSliderEl = $("threshold-slider");
+const thresholdValueEl = $("threshold-value");
+const lastDiffEl = $("last-diff");
 
 const capturedFrames = []; // {ts, dataUrl, eventLabel} — newest first
 
@@ -170,6 +175,38 @@ setInterval(() => {
   pruneCapturedFrames();
   if (capturedFrames.length !== before) renderCapturedFrames();
 }, CAPTURE_PRUNE_INTERVAL_MS);
+
+// ---------------- Calibration ----------------
+function updateLastDiffReadout(diff) {
+  if (!lastDiffEl) return;
+  lastDiffEl.textContent = diff.toFixed(1);
+  lastDiffEl.dataset.state = diff >= changeThreshold ? "above" : "below";
+}
+
+function updateThresholdReadout() {
+  if (thresholdValueEl) thresholdValueEl.textContent = changeThreshold.toFixed(1);
+  // Re-color the last-diff readout against the new threshold without waiting
+  // for the next tick, so the slider feels responsive.
+  if (lastDiffEl && lastDiffEl.textContent && lastDiffEl.textContent !== "—") {
+    const last = parseFloat(lastDiffEl.textContent);
+    if (!Number.isNaN(last)) {
+      lastDiffEl.dataset.state = last >= changeThreshold ? "above" : "below";
+    }
+  }
+}
+
+function initCalibration() {
+  if (!thresholdSliderEl) return;
+  thresholdSliderEl.value = String(changeThreshold);
+  updateThresholdReadout();
+  thresholdSliderEl.addEventListener("input", () => {
+    const v = parseFloat(thresholdSliderEl.value);
+    if (!Number.isNaN(v)) {
+      changeThreshold = v;
+      updateThresholdReadout();
+    }
+  });
+}
 
 // ---------------- Camera + frame buffer ----------------
 async function initCamera() {
@@ -375,7 +412,8 @@ function autoCaptureTick() {
   }
 
   const diff = hashDiff(lastNarrationHash, h);
-  if (diff < CHANGE_THRESHOLD) {
+  updateLastDiffReadout(diff);
+  if (diff < changeThreshold) {
     // Scene hasn't changed enough to be worth narrating. Stay silent.
     return;
   }
@@ -552,4 +590,5 @@ changeBtn.addEventListener("click", () => runChangeAnalysis());
 
   // Initial render of the (likely empty) captures panel so the layout settles.
   renderCapturedFrames();
+  initCalibration();
 })();

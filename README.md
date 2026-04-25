@@ -198,12 +198,14 @@ temperature = 0.2
 
 - `AUTO_CAPTURE_MS` (frontend, `app.js`): interval between automatic
   capture ticks. Default 5 s. Raise for less aggressive polling.
-- `CHANGE_THRESHOLD` (frontend, `app.js`): mean absolute brightness diff
-  (0–255 scale) between consecutive 16×16 frame thumbnails required for the
-  auto-capture loop to narrate. Below this, the tick stays silent and no
-  request is sent. Default 8. Lower for chattier narration, higher for
-  terser. Static scenes typically diff at 1–3; an object moving usually
-  diffs 10+.
+- `changeThreshold` (frontend, `app.js`, default 8 via `CHANGE_THRESHOLD_DEFAULT`):
+  mean absolute brightness diff (0–255 scale) between consecutive 16×16 frame
+  thumbnails required for the auto-capture loop to narrate. Below this, the
+  tick stays silent and no request is sent. **The Calibration panel in the UI
+  exposes this as a live slider** with a "Last diff" readout (green = above
+  threshold, would have fired; gray = below, gated to silence). Static scenes
+  typically diff at 1–3; an object moving usually diffs 10+. Tune in the room
+  you'll demo in.
 - `CAPTURE_TTL_MS` (frontend, `app.js`): how long thumbnails live in the
   "Recent captures" sub-window before being auto-evicted. Default 1 min.
 - `CAPTURE_PRUNE_INTERVAL_MS` (frontend, `app.js`): how often the eviction

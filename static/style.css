@@ -306,6 +306,42 @@ details[open] summary { color: var(--text); margin-bottom: 8px; }
 }
 .captured-empty { padding: 8px 0; }
 
+/* ── Calibration panel ─────────────────────────────────────────────────────── */
+#calibration-panel .calib-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+#calibration-panel label {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+#calibration-panel input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.calib-readout {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 36px;
+  text-align: right;
+}
+.calib-meta {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+.calib-hint { font-size: 11px; }
+#last-diff[data-state="above"] { color: var(--accent); }
+#last-diff[data-state="below"] { color: var(--muted); }
+
 /* ── History (in right-app panel) ──────────────────────────────────────────── */
 .history-entry {
   padding: 12px 0;
