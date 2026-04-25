@@ -17,9 +17,9 @@ aim a camera, the sound itself prompts the investigation.
 ## Architecture
 
 ```
-Browser:  mic → YAMNet (TF.js) → event label
-          camera → JPEG snapshot
-                       │
+Browser:  mic    → YAMNet (TF.js)   → event label
+          camera → ClipBuffer       → 10 s rolling window of JPEG frames
+                       │              (sampled at 1 fps, sample()-on-demand)
                        ▼
 Server:   POST /investigate {event, image_b64}
               → SeeingEye FlowExecutor (Translator → Reasoner)
@@ -28,6 +28,21 @@ Server:   POST /investigate {event, image_b64}
                        │
 Browser:  speechSynthesis.speak(response)
 ```
+
+### Clip → frame sampling
+
+The model takes images, not video, so the browser maintains a rolling window of
+recent frames and picks representative ones per trigger. `static/clip_buffer.js`
+exposes a `ClipBuffer` class that owns the window and the sampling policy:
+
+| Strategy | Returns | Used by |
+|---|---|---|
+| `latest` | newest frame | (available; current `/investigate` uses `captureNow()` for a fresh moment-of-trigger snap) |
+| `edges` | `[oldest, newest]` | `/analyze-change` |
+| `uniform` | N evenly spaced frames across the window | reserved for future multi-image investigate |
+
+Adding a new strategy (e.g. perceptual-hash dedup, motion keyframes) is a local
+edit to `ClipBuffer.sample()` — no orchestration changes needed.
 
 ## Running it
 
@@ -106,6 +121,9 @@ sound detection"** to also load YAMNet and start listening on the mic.
 
 - `COOLDOWN_MS` (frontend, `app.js`): minimum gap between auto-triggers. Default 15 s.
 - `CONFIDENCE_THRESHOLD` (frontend): YAMNet confidence required to trigger. Default 0.6.
+- `CLIP_WINDOW_MS` / `CLIP_FPS` (frontend, `app.js`): rolling-window length and
+  sampling rate handed to `ClipBuffer`. Default 10 s @ 1 fps. Raise the fps for
+  finer change detection at the cost of more memory and per-tick JPEG encodes.
 - `EVENT_PROMPTS` (backend, `server.py`): the per-event investigative prompt. The
   hackathon "secret sauce" — hand-crafting these per class gives much better answers
   than a generic template.
@@ -118,7 +136,8 @@ sound detection"** to also load YAMNet and start listening on the mic.
 |---|---|
 | `demo/server.py` | FastAPI app — `/investigate`, `/analyze-change`, `/health`. Patches `OPENAI_API_KEY` into the SeeingEye config singleton at startup. |
 | `demo/static/index.html` | Minimal page: status, manual triggers, camera preview. |
-| `demo/static/app.js` | Camera capture, 10 s frame buffer, YAMNet inference loop, TTS, fetch wiring. |
+| `demo/static/app.js` | Camera init, YAMNet inference loop, TTS, trigger orchestration, fetch wiring. |
+| `demo/static/clip_buffer.js` | `ClipBuffer` class — rolling 10 s frame window with named sampling strategies (`latest` / `edges` / `uniform`). The seam between "video coming in" and "images going to the model". |
 | `demo/static/event_prompts.js` | UI label map for the "Heard: …" chip. |
 | `demo/static/style.css` | Dark theme. |
 | `src/multi-agent/config/config.toml` | `[llm.translator_api]` repointed at OpenAI; `[llm.reasoning_api]` left on local vLLM (`:8001`). |
