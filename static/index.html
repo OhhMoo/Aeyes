@@ -16,8 +16,15 @@
     <section id="status-card" aria-live="polite" aria-atomic="true">
       <p class="status-label">Status</p>
       <p id="status-text" class="status-text">Initializing…</p>
+
+      <div id="meter-row" hidden>
+        <div id="audio-meter" aria-hidden="true"><span id="audio-meter-fill"></span></div>
+        <p id="top-class" class="muted">—</p>
+      </div>
+
       <p id="event-chip" class="event-chip" hidden></p>
       <p id="response-text" class="response-text" hidden></p>
+      <p id="latency-chip" class="latency-chip" hidden></p>
     </section>
 
     <section id="controls">
@@ -43,6 +50,11 @@
       <video id="camera" autoplay muted playsinline></video>
       <canvas id="capture-canvas" hidden></canvas>
       <img id="last-frame" alt="last captured frame" hidden />
+    </section>
+
+    <section id="history-section" hidden>
+      <p class="muted">Recent investigations</p>
+      <ul id="history-list"></ul>
     </section>
 
     <footer>

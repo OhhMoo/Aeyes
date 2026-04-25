@@ -84,6 +84,74 @@ header h1 {
   line-height: 1.5;
 }
 
+#meter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+#audio-meter {
+  flex: 0 0 96px;
+  height: 6px;
+  background: #1a1c22;
+  border-radius: 3px;
+  overflow: hidden;
+}
+#audio-meter-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 80ms linear;
+}
+#top-class {
+  margin: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-chip {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #1d2027;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+#history-section {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 14px 18px 16px;
+  border: 1px solid #23262d;
+}
+#history-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#history-list li {
+  background: var(--panel-2);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+#history-list .h-meta {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
 #controls {
   display: flex;
   flex-wrap: wrap;

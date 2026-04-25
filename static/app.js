@@ -21,20 +21,30 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $("status-text");
 const eventChipEl = $("event-chip");
 const responseEl = $("response-text");
+const latencyChipEl = $("latency-chip");
 const enableMicBtn = $("enable-mic");
 const describeBtn = $("describe-btn");
 const changeBtn = $("change-btn");
 const cameraEl = $("camera");
 const captureCanvas = $("capture-canvas");
 const lastFrameImg = $("last-frame");
+const meterRowEl = $("meter-row");
+const audioMeterFillEl = $("audio-meter-fill");
+const topClassEl = $("top-class");
+const historySectionEl = $("history-section");
+const historyListEl = $("history-list");
+
+const HISTORY_MAX = 3;
 
 let lastTriggerAt = 0;
 let busy = false;
 let yamnetModel = null;
 let yamnetLabels = null;
+let yamnetLoading = null; // in-flight load promise (dedup boot prewarm vs button click)
 let audioCtx = null;
 let micEnabled = false;
 let clipBuffer = null; // ClipBuffer instance, created after camera init
+const history = [];
 
 // ---------------- TTS ----------------
 function speak(text, opts = {}) {
@@ -65,6 +75,47 @@ function showEvent(eventKey) {
 function showResponse(text) {
   responseEl.textContent = text;
   responseEl.hidden = !text;
+}
+
+function showLatency(seconds) {
+  if (typeof seconds !== "number" || !isFinite(seconds)) {
+    latencyChipEl.hidden = true;
+    return;
+  }
+  latencyChipEl.textContent = `Responded in ${seconds.toFixed(2)}s`;
+  latencyChipEl.hidden = false;
+}
+
+function pushHistory(eventKey, text, elapsed) {
+  const eventLabel = eventKey === "_describe"
+    ? "Describe"
+    : eventKey === "_change"
+    ? "What changed"
+    : (window.EVENT_LABELS && window.EVENT_LABELS[eventKey]) || eventKey;
+  history.unshift({ ts: Date.now(), eventLabel, text, elapsed });
+  while (history.length > HISTORY_MAX) history.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  if (history.length === 0) {
+    historySectionEl.hidden = true;
+    historyListEl.textContent = "";
+    return;
+  }
+  historySectionEl.hidden = false;
+  historyListEl.textContent = "";
+  for (const item of history) {
+    const li = document.createElement("li");
+    li.textContent = item.text;
+    const meta = document.createElement("span");
+    meta.className = "h-meta";
+    const t = new Date(item.ts).toLocaleTimeString();
+    const elapsed = typeof item.elapsed === "number" ? `${item.elapsed.toFixed(2)}s` : "—";
+    meta.textContent = `${item.eventLabel} · ${t} · ${elapsed}`;
+    li.appendChild(meta);
+    historyListEl.appendChild(li);
+  }
 }
 
 // ---------------- Camera + frame buffer ----------------
@@ -103,18 +154,40 @@ function showLastFrame(dataUrl) {
 }
 
 // ---------------- YAMNet ----------------
-async function loadYamnet() {
-  setStatus("Loading audio model…");
-  const labelsResp = await fetch(YAMNET_LABELS_URL);
-  if (!labelsResp.ok) throw new Error(`labels fetch ${labelsResp.status}`);
-  const csv = await labelsResp.text();
-  yamnetLabels = csv
-    .split("\n")
-    .slice(1)
-    .map((line) => line.split(",").slice(2).join(",").replace(/^"|"$/g, ""))
-    .filter((s) => s);
+async function loadYamnet({ silent = false } = {}) {
+  if (yamnetModel) return;
+  if (yamnetLoading) {
+    // Already in flight (e.g. boot prewarm). Surface status if a non-silent
+    // caller is now waiting on it.
+    if (!silent) setStatus("Loading audio model…");
+    return yamnetLoading;
+  }
+  if (!silent) setStatus("Loading audio model…");
+  yamnetLoading = (async () => {
+    try {
+      await tf.setBackend("webgl");
+      await tf.ready();
+    } catch (e) {
+      console.warn("WebGL TF.js backend unavailable, falling back to default", e);
+    }
 
-  yamnetModel = await tf.loadGraphModel(YAMNET_HUB_URL, { fromTFHub: true });
+    const labelsResp = await fetch(YAMNET_LABELS_URL);
+    if (!labelsResp.ok) throw new Error(`labels fetch ${labelsResp.status}`);
+    const csv = await labelsResp.text();
+    yamnetLabels = csv
+      .split("\n")
+      .slice(1)
+      .map((line) => line.split(",").slice(2).join(",").replace(/^"|"$/g, ""))
+      .filter((s) => s);
+
+    yamnetModel = await tf.loadGraphModel(YAMNET_HUB_URL, { fromTFHub: true });
+  })();
+
+  try {
+    await yamnetLoading;
+  } finally {
+    yamnetLoading = null;
+  }
 }
 
 function predictTopClass(samples) {
@@ -161,6 +234,15 @@ async function initAudio() {
 
   processor.onaudioprocess = (ev) => {
     const data = ev.inputBuffer.getChannelData(0);
+
+    // Live audio meter — RMS of this block, lightly amplified so quiet rooms
+    // still register movement. Updates every audio block (~256 ms).
+    let sumSq = 0;
+    for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
+    const rms = Math.sqrt(sumSq / data.length);
+    const pct = Math.min(100, Math.round(rms * 600));
+    audioMeterFillEl.style.width = `${pct}%`;
+
     for (let i = 0; i < data.length; i++) {
       ringBuffer[writeIdx] = data[i];
       writeIdx = (writeIdx + 1) % ringBuffer.length;
@@ -176,6 +258,11 @@ async function initAudio() {
     }
     const top = predictTopClass(samples);
     if (!top) return;
+
+    // Always show what YAMNet currently thinks — gives the demo visible
+    // "thinking" between triggers.
+    topClassEl.textContent = `Hearing: ${top.label} · ${(top.score * 100).toFixed(0)}%`;
+
     if (
       window.YAMNET_TRIGGER_CLASSES.has(top.label) &&
       top.score >= CONFIDENCE_THRESHOLD &&
@@ -198,6 +285,7 @@ async function runInvestigation(eventKey) {
   lastTriggerAt = Date.now();
   showEvent(eventKey);
   showResponse("");
+  showLatency(null);
 
   setStatus("Investigating…", "investigating");
   speak("Investigating.");
@@ -209,6 +297,7 @@ async function runInvestigation(eventKey) {
   }
   showLastFrame(triggerFrame.dataUrl);
 
+  const tStart = performance.now();
   try {
     const resp = await fetch("/investigate", {
       method: "POST",
@@ -216,6 +305,8 @@ async function runInvestigation(eventKey) {
       body: JSON.stringify({ event: eventKey, image_b64: triggerFrame.dataUrl }),
     });
     const data = await resp.json();
+    const wallElapsed = (performance.now() - tStart) / 1000;
+    const elapsed = typeof data.elapsed_seconds === "number" ? data.elapsed_seconds : wallElapsed;
     if (!data.success) {
       setStatus("Something went wrong.", "error");
       showResponse(data.response || "");
@@ -223,6 +314,8 @@ async function runInvestigation(eventKey) {
     } else {
       setStatus(micEnabled ? "Listening." : "Ready.", micEnabled ? "listening" : null);
       showResponse(data.response);
+      showLatency(elapsed);
+      pushHistory(eventKey, data.response, elapsed);
       speak(data.response);
     }
   } catch (e) {
@@ -245,10 +338,12 @@ async function runChangeAnalysis() {
   speak("Comparing the scene.");
   showEvent("_change");
   showResponse("");
+  showLatency(null);
 
   const [oldest, newest] = clipBuffer.sample("edges");
   showLastFrame(newest.dataUrl);
 
+  const tStart = performance.now();
   try {
     const resp = await fetch("/analyze-change", {
       method: "POST",
@@ -256,6 +351,8 @@ async function runChangeAnalysis() {
       body: JSON.stringify({ frame0_b64: oldest.dataUrl, frame1_b64: newest.dataUrl }),
     });
     const data = await resp.json();
+    const wallElapsed = (performance.now() - tStart) / 1000;
+    const elapsed = typeof data.elapsed_seconds === "number" ? data.elapsed_seconds : wallElapsed;
     if (!data.success) {
       setStatus("Something went wrong.", "error");
       showResponse(data.response || "");
@@ -263,6 +360,8 @@ async function runChangeAnalysis() {
     } else {
       setStatus(micEnabled ? "Listening." : "Ready.", micEnabled ? "listening" : null);
       showResponse(data.response);
+      showLatency(elapsed);
+      pushHistory("_change", data.response, elapsed);
       speak(data.response);
     }
   } catch (e) {
@@ -281,6 +380,8 @@ enableMicBtn.addEventListener("click", async () => {
     await loadYamnet();
     await initAudio();
     micEnabled = true;
+    meterRowEl.hidden = false;
+    topClassEl.textContent = "Listening…";
     enableMicBtn.textContent = "Sound detection active";
     setStatus("Listening.", "listening");
     speak("Sound detection is active.");
@@ -315,5 +416,11 @@ document.querySelectorAll("button.manual").forEach((btn) => {
   } catch (e) {
     console.error(e);
     setStatus("Camera permission denied. Reload and grant camera access.", "error");
+  }
+  // Prewarm YAMNet in the background so the "Enable sound detection" click
+  // doesn't have to wait on a cold model fetch + WebGL init. Permissions
+  // still gated behind that click; this just stages the model.
+  if (window.tf) {
+    loadYamnet({ silent: true }).catch((e) => console.warn("YAMNet prewarm:", e));
   }
 })();
